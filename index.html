@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Overlay</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="overlay" class="overlay stealth" data-provider="deepseek">
+    <!-- Status bar -->
+    <div class="status-bar">
+      <div class="status-left">
+        <div class="status-dot" id="statusDot"></div>
+        <span class="status-text" id="statusText">stealth</span>
+      </div>
+
+      <div class="status-center">
+        <span class="provider-model" id="modelBadge">DeepSeek · deepseek-chat</span>
+      </div>
+
+      <div class="status-right">
+        <div class="mode-badge mute-badge" id="muteBadge" title="Muted — listening but not responding">
+          <span>muted</span>
+        </div>
+        <div class="mode-badge disable-badge" id="disableBadge" title="Disabled — not processing any input">
+          <span>paused</span>
+        </div>
+        <div class="mode-badge screen-badge" id="screenBadge" title="Screen captured">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
+          </svg>
+          <span>screen</span>
+        </div>
+        <div class="mode-badge audio-badge" id="audioBadge" title="Recording audio">
+          <div class="rec-dot"></div>
+          <span>rec</span>
+          <span class="rec-timer" id="recTimer">0:00</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Answer display area -->
+    <div class="answer-area" id="answerArea">
+      <div class="answer-content" id="answerContent">
+        <p class="placeholder-text">Cmd+Shift+Space to ask</p>
+      </div>
+    </div>
+
+    <!-- Scroll-to-bottom button -->
+    <button class="scroll-bottom" id="scrollBottomBtn" title="Scroll to bottom">↓</button>
+
+    <!-- Input area -->
+    <div class="input-area" id="inputArea">
+      <div class="input-wrapper">
+        <span class="input-prompt">›</span>
+        <input
+          type="text"
+          id="questionInput"
+          class="question-input"
+          placeholder="ask anything..."
+          autocomplete="off"
+          spellcheck="false"
+        />
+        <div class="input-spinner" id="inputSpinner"></div>
+      </div>
+      <div class="input-hints">
+        <span><kbd>⌘⇧Space</kbd> ask</span>
+        <span><kbd>⌘⇧S</kbd> screen</span>
+        <span><kbd>⌘⇧A</kbd> audio</span>
+        <span><kbd>⌘⇧M</kbd> mute</span>
+        <span><kbd>⌘⇧D</kbd> disable</span>
+      </div>
+      <div class="input-hints-secondary">
+        <span>/provider &nbsp;/mute &nbsp;/disable &nbsp;/opacity &nbsp;/help</span>
+      </div>
+    </div>
+  </div>
+
+  <script src="markdown.js"></script>
+  <script src="renderer.js"></script>
+</body>
+</html>
