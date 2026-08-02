@@ -228,7 +228,7 @@ function setupIPC() {
           fs.writeFileSync(tmpFile, audioBuffer);
 
           // Run native STT helper
-          const sttBin = path.join(__dirname, '..', '..', 'bin', 'stt');
+          const sttBin = path.join(__dirname, '..', '..', 'bin', 'stt.app', 'Contents', 'MacOS', 'stt');
           let transcript;
           try {
             transcript = execFileSync(sttBin, [tmpFile], {

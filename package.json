@@ -5,7 +5,7 @@
   "main": "src/main/main.js",
   "scripts": {
     "start": "npm run build:stt && electron .",
-    "build:stt": "swiftc -O bin/stt.swift -o bin/stt 2>/dev/null || true"
+    "build:stt": "mkdir -p bin/stt.app/Contents/MacOS && swiftc -O bin/stt.swift -o bin/stt.app/Contents/MacOS/stt 2>/dev/null || true"
   },
   "devDependencies": {
     "electron": "^35.0.0"
