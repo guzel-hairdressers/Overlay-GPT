@@ -68,6 +68,10 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: winWidth,
     height: winHeight,
+    minWidth: winWidth,
+    maxWidth: winWidth,
+    minHeight: winHeight,
+    maxHeight: winHeight,
     x: screenWidth - winWidth - 24,
     y: screenHeight - winHeight - 24,
     transparent: true,
@@ -79,6 +83,7 @@ function createWindow() {
     focusable: true,
     type: 'panel',
     visualEffectState: 'active',
+    useContentSize: true,
     webPreferences: {
       preload: path.join(__dirname, '..', 'preload', 'preload.js'),
       contextIsolation: true,
@@ -103,12 +108,12 @@ function createWindow() {
 
   // Auto-approve media permissions
   session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
-    const allowed = ['media', 'mediaKeySystem', 'display-capture', 'audioCapture', 'videoCapture'];
+    const allowed = ['media', 'mediaKeySystem', 'display-capture', 'audioCapture', 'videoCapture', 'speech'];
     callback(allowed.includes(permission));
   });
 
   session.defaultSession.setPermissionCheckHandler((webContents, permission) => {
-    const allowed = ['media', 'mediaKeySystem', 'display-capture', 'audioCapture', 'videoCapture'];
+    const allowed = ['media', 'mediaKeySystem', 'display-capture', 'audioCapture', 'videoCapture', 'speech'];
     return allowed.includes(permission);
   });
 

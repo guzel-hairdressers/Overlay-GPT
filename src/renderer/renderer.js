@@ -261,22 +261,36 @@ async function startRecording() {
 
       // For providers without audio support, use the transcript instead
       const audioSupported = providerKind === 'gemini' || providerKind === 'openai';
-      if (!audioSupported && speechTranscript) {
-        // Use transcript as text — don't send audio blob
+
+      if (!audioSupported) {
         audioBadge.classList.remove('visible');
         statusDot.classList.remove('recording');
 
-        const transcriptText = speechTranscript.trim();
-        const existingQuestion = questionInput.value.trim();
-        const combined = existingQuestion
-          ? existingQuestion + '\n\n[Transcript]: ' + transcriptText
-          : transcriptText;
-        questionInput.value = combined;
+        if (speechTranscript.trim()) {
+          // Use transcript as text
+          const transcriptText = speechTranscript.trim();
+          const existingQuestion = questionInput.value.trim();
+          const combined = existingQuestion
+            ? existingQuestion + '\n\n[Transcript]: ' + transcriptText
+            : transcriptText;
+          questionInput.value = combined;
+          speechTranscript = '';
+          audioChunks = [];
+          await submitQuestion(combined);
+          return;
+        }
 
-        // Clear audio — submit will go through as text
+        // No transcript captured — show a message, don't send audio
         speechTranscript = '';
         audioChunks = [];
-        await submitQuestion(combined);
+        const msgEl = document.createElement('div');
+        msgEl.className = 'answer-text command-result';
+        msgEl.textContent = 'No speech captured. Try again or type your question instead. (Speech recognition may need microphone permission in System Settings > Privacy > Microphone)';
+        answerContent.appendChild(msgEl);
+        answerArea.scrollTop = answerArea.scrollHeight;
+        statusText.textContent = isActive ? 'active' : 'stealth';
+        questionInput.placeholder = 'ask anything...';
+        if (isActive) questionInput.focus();
         return;
       }
 
