@@ -236,6 +236,12 @@ html, body {
   animation: pulse-red 1s ease-in-out infinite;
 }
 
+.status-dot.transcribing {
+  background: var(--accent);
+  box-shadow: 0 0 10px var(--accent-dim);
+  animation: pulse-blue 0.8s ease-in-out infinite;
+}
+
 @keyframes pulse {
   0%, 100% { opacity: 0.6; transform: scale(1); }
   50% { opacity: 1; transform: scale(1.3); }
@@ -244,6 +250,11 @@ html, body {
 @keyframes pulse-red {
   0%, 100% { opacity: 0.7; transform: scale(1); }
   50% { opacity: 1; transform: scale(1.5); }
+}
+
+@keyframes pulse-blue {
+  0%, 100% { opacity: 0.7; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.4); }
 }
 
 .status-text {

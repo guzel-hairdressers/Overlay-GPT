@@ -37,6 +37,11 @@ let isRecording = false;
 let recordingStartTime = null;
 let recordingTimerInterval = null;
 
+// Speech-to-text (macOS built-in via Web Speech API)
+let speechRecognition = null;
+let speechTranscript = '';
+let isTranscribing = false;
+
 // ─── Init / Hydrate ──────────────────────────────────────────────────────────
 
 async function hydrateUI() {
@@ -252,6 +257,29 @@ async function startRecording() {
 
     mediaRecorder.onstop = async () => {
       stream.getTracks().forEach(t => t.stop());
+      stopSpeechRecognition();
+
+      // For providers without audio support, use the transcript instead
+      const audioSupported = providerKind === 'gemini' || providerKind === 'openai';
+      if (!audioSupported && speechTranscript) {
+        // Use transcript as text — don't send audio blob
+        audioBadge.classList.remove('visible');
+        statusDot.classList.remove('recording');
+
+        const transcriptText = speechTranscript.trim();
+        const existingQuestion = questionInput.value.trim();
+        const combined = existingQuestion
+          ? existingQuestion + '\n\n[Transcript]: ' + transcriptText
+          : transcriptText;
+        questionInput.value = combined;
+
+        // Clear audio — submit will go through as text
+        speechTranscript = '';
+        audioChunks = [];
+        await submitQuestion(combined);
+        return;
+      }
+
       if (audioChunks.length === 0) return;
 
       const blob = new Blob(audioChunks, { type: 'audio/webm' });
@@ -285,11 +313,21 @@ async function startRecording() {
     mediaRecorder.start(1000);
     isRecording = true;
 
+    // Start speech-to-text for providers that don't support audio natively
+    startSpeechRecognition();
+
     activate();
     audioBadge.classList.add('visible');
-    statusDot.classList.add('recording');
-    statusText.textContent = 'recording';
-    questionInput.placeholder = 'recording... press enter or ⌘⇧A to stop';
+    const hasNativeAudio = providerKind === 'gemini' || providerKind === 'openai';
+    if (hasNativeAudio) {
+      statusDot.classList.add('recording');
+      statusText.textContent = 'recording';
+      questionInput.placeholder = 'recording... press enter or ⌘⇧A to stop';
+    } else {
+      statusDot.classList.add('transcribing');
+      statusText.textContent = 'transcribing';
+      questionInput.placeholder = 'transcribing... press enter or ⌘⇧A to stop';
+    }
 
     recordingStartTime = Date.now();
     recTimer.textContent = '0:00';
@@ -322,6 +360,8 @@ function stopRecording(discard) {
       mediaRecorder.stream?.getTracks().forEach(t => t.stop());
     };
     mediaRecorder.stop();
+    stopSpeechRecognition();
+    speechTranscript = '';
     audioBadge.classList.remove('visible');
     statusDot.classList.remove('recording');
     statusText.textContent = isActive ? 'active' : disabled ? 'disabled' : muted ? 'muted' : 'stealth';
@@ -332,6 +372,75 @@ function stopRecording(discard) {
 
   statusText.textContent = 'processing';
   mediaRecorder.stop();
+}
+
+// ─── Speech-to-Text (macOS built-in via Web Speech API) ───────────────────
+
+function startSpeechRecognition() {
+  // Only needed for providers without native audio support
+  if (providerKind === 'gemini' || providerKind === 'openai') return;
+
+  if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+    console.warn('SpeechRecognition not available');
+    return;
+  }
+
+  try {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    speechRecognition = new SR();
+    speechRecognition.continuous = true;
+    speechRecognition.interimResults = true;
+    speechRecognition.lang = 'en-US';
+    speechTranscript = '';
+
+    speechRecognition.onresult = (event) => {
+      let interim = '';
+      let final = '';
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        if (event.results[i].isFinal) {
+          final += event.results[i][0].transcript;
+        } else {
+          interim += event.results[i][0].transcript;
+        }
+      }
+      if (final) speechTranscript += ' ' + final;
+      // Show live transcription in the input placeholder
+      const display = (speechTranscript + ' ' + interim).trim();
+      if (display) {
+        questionInput.placeholder = 'transcribing: ' + display.slice(0, 60) + (display.length > 60 ? '...' : '');
+      }
+    };
+
+    speechRecognition.onerror = (event) => {
+      console.warn('Speech recognition error:', event.error);
+      if (event.error === 'not-allowed') {
+        stopSpeechRecognition();
+      }
+    };
+
+    speechRecognition.onend = () => {
+      isTranscribing = false;
+    };
+
+    speechRecognition.start();
+    isTranscribing = true;
+    statusDot.classList.add('transcribing');
+  } catch (e) {
+    console.warn('Failed to start speech recognition:', e);
+  }
+}
+
+function stopSpeechRecognition() {
+  if (speechRecognition) {
+    try {
+      speechRecognition.stop();
+    } catch (e) {
+      // May throw if already stopped
+    }
+    speechRecognition = null;
+  }
+  isTranscribing = false;
+  statusDot.classList.remove('transcribing');
 }
 
 // ─── WebM → WAV transcode ──────────────────────────────────────────────────
