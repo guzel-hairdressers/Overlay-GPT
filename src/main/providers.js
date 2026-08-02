@@ -376,6 +376,50 @@ async function fetchModels(config, providerId) {
   return { models: [] };
 }
 
+// ─── Audio transcription bridge ──────────────────────────────────────────────
+
+function supportsAudio(provider) {
+  return provider && (provider.kind === 'gemini' || provider.kind === 'openai');
+}
+
+async function transcribeAudio(config, audioBase64, audioMimeType) {
+  // Use Gemini for transcription since it supports audio natively
+  const geminiProvider = resolveProvider(config, 'gemini');
+  if (!geminiProvider || !geminiProvider.apiKey) {
+    return { error: 'No Gemini API key configured. Set one with /key gemini <key> to enable audio transcription for this provider.' };
+  }
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiProvider.apiKey}`;
+
+  const body = JSON.stringify({
+    contents: [{
+      role: 'user',
+      parts: [
+        { text: 'Transcribe this audio recording word-for-word. Return ONLY the transcript, no other text.' },
+        { inlineData: { mimeType: audioMimeType || 'audio/webm', data: audioBase64 } }
+      ]
+    }],
+    generationConfig: { temperature: 0, maxOutputTokens: 2048 }
+  });
+
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body
+    });
+    const data = await res.json();
+    if (data.error) {
+      return { error: `Gemini transcription failed: ${data.error.message || JSON.stringify(data.error)}` };
+    }
+    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!text) return { error: 'Gemini transcription returned no text.' };
+    return { transcript: text.trim() };
+  } catch (err) {
+    return { error: `Transcription network error: ${err.message}` };
+  }
+}
+
 // ─── Exports ──────────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -383,5 +427,7 @@ module.exports = {
   resolveProvider,
   callProvider,
   fetchModels,
-  audioPolicy
+  audioPolicy,
+  supportsAudio,
+  transcribeAudio
 };

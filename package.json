@@ -4,7 +4,8 @@
   "description": "Screen-capture-invisible AI overlay powered by Gemini Pro",
   "main": "src/main/main.js",
   "scripts": {
-    "start": "electron ."
+    "start": "npm run build:stt && electron .",
+    "build:stt": "swiftc -O bin/stt.swift -o bin/stt 2>/dev/null || true"
   },
   "devDependencies": {
     "electron": "^35.0.0"
