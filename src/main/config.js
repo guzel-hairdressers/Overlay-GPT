@@ -42,8 +42,8 @@ function migrateLegacy(raw) {
   if (raw.geminiApiKey !== undefined || (raw.model && !raw.providers)) {
     if (!raw.providers) raw.providers = {};
     if (!raw.providers.gemini) raw.providers.gemini = {};
-    if (raw.geminiApiKey) {
-      raw.providers.gemini.apiKey = raw.geminiApiKey;
+    if (raw.geminiApiKey !== undefined) {
+      raw.providers.gemini.apiKey = raw.geminiApiKey || raw.providers.gemini.apiKey;
       delete raw.geminiApiKey;
     }
     if (raw.model && !raw.providers.gemini.model) {
