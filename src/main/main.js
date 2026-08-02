@@ -207,7 +207,7 @@ function setupIPC() {
       return { type: 'error', error: 'No input provided.' };
     }
 
-    // Audio transcription bridge for providers without native audio support
+    // Audio transcription via mlx-whisper for providers without native audio
     let finalQuestion = question;
     let finalAudioBase64 = audioBase64;
     let finalAudioMimeType = audioMimeType;
@@ -215,45 +215,35 @@ function setupIPC() {
     if (audioBase64) {
       const provider = resolveProvider(config);
       if (provider && !supportsAudio(provider)) {
-        // Use macOS built-in speech-to-text
         try {
           const { execFileSync } = require('child_process');
           const fs = require('fs');
           const os = require('os');
 
-          // Write audio to temp file
-          const tmpDir = os.tmpdir();
-          const tmpFile = path.join(tmpDir, `overlay-audio-${Date.now()}.${audioMimeType === 'audio/wav' ? 'wav' : 'webm'}`);
+          const tmpFile = path.join(os.tmpdir(), `overlay-audio-${Date.now()}.wav`);
           const audioBuffer = Buffer.from(audioBase64, 'base64');
           fs.writeFileSync(tmpFile, audioBuffer);
 
-          // Run native STT helper
-          const sttBin = path.join(__dirname, '..', '..', 'bin', 'stt.app', 'Contents', 'MacOS', 'stt');
-          let transcript;
+          const scriptPath = path.join(__dirname, '..', '..', 'bin', 'transcribe.py');
           try {
-            transcript = execFileSync(sttBin, [tmpFile], {
+            const transcript = execFileSync('python3', [scriptPath, tmpFile], {
               encoding: 'utf-8',
-              timeout: 30000,
+              timeout: 120000,
               stdio: ['ignore', 'pipe', 'pipe']
             }).trim();
+            if (transcript && !transcript.startsWith('ERROR:')) {
+              finalQuestion = question
+                ? question + '\n\n[Transcript]: ' + transcript
+                : transcript;
+              finalAudioBase64 = null;
+              finalAudioMimeType = null;
+            }
           } finally {
-            // Clean up temp file
             try { fs.unlinkSync(tmpFile); } catch (e) { /* ignore */ }
           }
-
-          if (transcript && !transcript.startsWith('ERROR:')) {
-            finalQuestion = question
-              ? question + '\n\n[Audio transcript]: ' + transcript
-              : transcript;
-            finalAudioBase64 = null;
-            finalAudioMimeType = null;
-          } else {
-            const errMsg = transcript || 'Speech recognition failed.';
-            return { type: 'error', error: `Transcription failed: ${errMsg}\n\nType your question instead, or use /provider gemini with a Gemini key for cloud transcription.` };
-          }
         } catch (err) {
-          console.error('STT helper failed:', err);
-          return { type: 'error', error: `Speech-to-text error: ${err.message}\n\nType your question instead, or set a Gemini key with /key gemini <key> for cloud transcription.` };
+          console.error('Whisper transcription failed:', err.message);
+          // Fall through — providers.js will append a note to the text
         }
       }
     }

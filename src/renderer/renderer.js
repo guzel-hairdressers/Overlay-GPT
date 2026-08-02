@@ -257,11 +257,11 @@ async function startRecording() {
 
       const blob = new Blob(audioChunks, { type: 'audio/webm' });
 
-      // Transcode webm → wav for providers that need it (OpenAI)
+      // Transcode to WAV for providers that don't support webm natively
       let finalBlob = blob;
       let finalMimeType = 'audio/webm';
 
-      if (providerKind === 'openai') {
+      if (providerKind !== 'gemini') {
         try {
           finalBlob = await webmToWav(blob);
           finalMimeType = 'audio/wav';

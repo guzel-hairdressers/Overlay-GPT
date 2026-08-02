@@ -1,4 +1,3 @@
 node_modules/
 .DS_Store
 .claude/
-bin/stt.app/Contents/MacOS/stt
