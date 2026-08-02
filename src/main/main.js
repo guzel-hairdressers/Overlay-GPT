@@ -80,7 +80,7 @@ function createWindow() {
     type: 'panel',
     visualEffectState: 'active',
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
+      preload: path.join(__dirname, '..', 'preload', 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false
@@ -112,7 +112,7 @@ function createWindow() {
     return allowed.includes(permission);
   });
 
-  mainWindow.loadFile('index.html');
+  mainWindow.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
 
   mainWindow.on('closed', () => {
     mainWindow = null;
