@@ -49,6 +49,10 @@ let audioAnalyzer = null;
 let vadThresholdDb = 2.5;  // dB above background noise floor
 let vadSilenceMs = 1600;    // 1.6s continuous silence triggers auto-submit
 
+// Audio Chunking & Parallel Transcription state
+let chunkTranscripts = [];
+let chunkPromises = [];
+
 // Video screen stream state
 let isVideoStreamActive = false;
 let videoStreamTimer = null;
@@ -300,6 +304,9 @@ async function startRecording() {
     }
 
     audioChunks = [];
+    chunkTranscripts = [];
+    chunkPromises = [];
+
     const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
       ? 'audio/webm;codecs=opus' : 'audio/webm';
     mediaRecorder = new MediaRecorder(stream, { mimeType });
@@ -308,35 +315,76 @@ async function startRecording() {
       if (e.data.size > 0) audioChunks.push(e.data);
     };
 
+    const flushChunkInternal = async () => {
+      if (!audioChunks || audioChunks.length === 0) return;
+      const currentChunkData = [...audioChunks];
+      audioChunks = []; // Clear buffer so MediaRecorder continues accumulating into fresh array
+
+      const chunkIndex = chunkPromises.length;
+      const blob = new Blob(currentChunkData, { type: 'audio/webm' });
+
+      const p = (async () => {
+        try {
+          let wavBlob = blob;
+          try {
+            wavBlob = await webmToWav(blob);
+          } catch (e) {
+            console.warn('WAV transcode failed for chunk:', e);
+          }
+
+          const arrayBuffer = await wavBlob.arrayBuffer();
+          const base64 = btoa(
+            new Uint8Array(arrayBuffer).reduce((data, byte) => data + String.fromCharCode(byte), '')
+          );
+
+          const text = await window.api.transcribeChunk(base64);
+          if (text && text.trim()) {
+            chunkTranscripts[chunkIndex] = text.trim();
+            if (statusText && isRecording) {
+              statusText.textContent = `chunk ${chunkIndex + 1} transcribed...`;
+            }
+          }
+        } catch (err) {
+          console.warn(`Chunk ${chunkIndex + 1} transcription failed:`, err);
+        }
+      })();
+
+      chunkPromises.push(p);
+      return p;
+    };
+
+    window.api.onFlushChunk(async () => {
+      if (isRecording) {
+        await flushChunkInternal();
+        statusText.textContent = `chunk ${chunkPromises.length} committed... listening`;
+      }
+    });
+
     mediaRecorder.onstop = async () => {
       stream.getTracks().forEach(t => t.stop());
 
-      if (audioChunks.length === 0) return;
+      // Flush final remaining audio chunk
+      await flushChunkInternal();
 
-      const blob = new Blob(audioChunks, { type: 'audio/webm' });
-
-      // Transcode to WAV for providers that don't support webm natively
-      let finalBlob = blob;
-      let finalMimeType = 'audio/webm';
-
-      if (providerKind !== 'gemini') {
-        try {
-          finalBlob = await webmToWav(blob);
-          finalMimeType = 'audio/wav';
-        } catch (e) {
-          console.warn('WAV transcode failed, sending webm:', e);
-        }
+      if (chunkPromises.length > 0) {
+        statusText.textContent = 'combining speech chunks...';
+        await Promise.all(chunkPromises);
       }
 
-      const arrayBuffer = await finalBlob.arrayBuffer();
-      const base64 = btoa(
-        new Uint8Array(arrayBuffer).reduce((data, byte) => data + String.fromCharCode(byte), '')
-      );
+      const combinedSpeech = chunkTranscripts.filter(Boolean).join(' ').trim();
+      chunkTranscripts = [];
+      chunkPromises = [];
 
-      pendingAudio = { base64, mimeType: finalMimeType };
+      const typedQuestion = questionInput.value.trim();
+      const finalQuestion = typedQuestion || combinedSpeech;
 
-      const question = questionInput.value.trim() || '';
-      await submitQuestion(question);
+      if (!finalQuestion) {
+        statusText.textContent = 'no speech detected...';
+        deactivate();
+        return;
+      }
+
+      await submitQuestion(finalQuestion);
     };
 
     mediaRecorder.start(1000);

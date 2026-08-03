@@ -51,5 +51,9 @@ contextBridge.exposeInMainWorld('api', {
 
   onConfigChange: (callback) => {
     ipcRenderer.on('config-change', (_, config) => callback(config));
+  },
+
+  onFlushChunk: (callback) => {
+    ipcRenderer.on('flush-chunk', () => callback());
   }
 });

@@ -474,6 +474,17 @@ function registerShortcuts() {
     broadcastConfig(config);
   });
 
+  // Chunk Commit Shortcut (flush current audio chunk & continue recording)
+  globalShortcut.register('CommandOrControl+Space', () => {
+    if (!mainWindow) return;
+    mainWindow.webContents.send('flush-chunk');
+  });
+
+  globalShortcut.register('CommandOrControl+Shift+C', () => {
+    if (!mainWindow) return;
+    mainWindow.webContents.send('flush-chunk');
+  });
+
   // Quit
   globalShortcut.register('CommandOrControl+Shift+Q', () => {
     app.quit();
