@@ -304,134 +304,83 @@ async function startRecording() {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     }
 
-    chunkTranscripts = [];
-    chunkPromises = [];
-
+    audioChunks = [];
+    latestTranscript = '';
     const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
       ? 'audio/webm;codecs=opus' : 'audio/webm';
 
-    let currentRecorder = null;
-    let currentChunks = [];
-
-    const startNewRecorder = () => {
-      currentChunks = [];
-      const mr = new MediaRecorder(stream, { mimeType });
-      mr.ondataavailable = (e) => {
-        if (e.data.size > 0) currentChunks.push(e.data);
-      };
-      mr.start(500);
-      return mr;
+    mediaRecorder = new MediaRecorder(stream, { mimeType });
+    mediaRecorder.ondataavailable = (e) => {
+      if (e.data.size > 0) audioChunks.push(e.data);
     };
 
-    currentRecorder = startNewRecorder();
-    mediaRecorder = currentRecorder;
+    const flushAndTranscribeCurrentAudio = async () => {
+      if (!mediaRecorder || mediaRecorder.state !== 'recording') return;
+      try {
+        mediaRecorder.requestData();
+      } catch (e) {}
 
-    const flushChunkInternal = async () => {
-      if (!currentRecorder || currentRecorder.state !== 'recording') return;
+      if (audioChunks.length === 0) return;
+      const blob = new Blob(audioChunks, { type: 'audio/webm' });
 
-      const oldRecorder = currentRecorder;
-      const oldChunks = currentChunks;
+      try {
+        const wavBlob = await webmToWav(blob);
+        const arrayBuffer = await wavBlob.arrayBuffer();
+        const base64 = btoa(
+          new Uint8Array(arrayBuffer).reduce((data, byte) => data + String.fromCharCode(byte), '')
+        );
 
-      // Start new recorder immediately on active stream so 0ms of audio is missed
-      currentRecorder = startNewRecorder();
-      mediaRecorder = currentRecorder;
-
-      const chunkIndex = chunkPromises.length;
-
-      // Wait for old recorder to stop cleanly and finalize EBML headers
-      const blobPromise = new Promise((resolve) => {
-        oldRecorder.onstop = () => {
-          if (oldChunks.length === 0) resolve(null);
-          else resolve(new Blob(oldChunks, { type: 'audio/webm' }));
-        };
-        try { oldRecorder.stop(); } catch (e) { resolve(null); }
-      });
-
-      const p = (async () => {
-        try {
-          const webmBlob = await blobPromise;
-          if (!webmBlob || webmBlob.size === 0) return;
-
-          let wavBlob = webmBlob;
-          try {
-            wavBlob = await webmToWav(webmBlob);
-          } catch (e) {
-            console.warn('WAV transcode failed for chunk:', e);
+        const text = await window.api.transcribeChunk(base64);
+        if (text && text.trim()) {
+          latestTranscript = text.trim();
+          if (statusText && isRecording) {
+            statusText.textContent = `live: "${latestTranscript}"`;
           }
-
-          const arrayBuffer = await wavBlob.arrayBuffer();
-          const base64 = btoa(
-            new Uint8Array(arrayBuffer).reduce((data, byte) => data + String.fromCharCode(byte), '')
-          );
-
-          const text = await window.api.transcribeChunk(base64);
-          if (text && text.trim()) {
-            chunkTranscripts[chunkIndex] = text.trim();
-            if (statusText && isRecording) {
-              statusText.textContent = `chunk ${chunkIndex + 1} transcribed: "${text.trim()}"`;
-            }
-          }
-        } catch (err) {
-          console.warn(`Chunk ${chunkIndex + 1} transcription failed:`, err);
         }
-      })();
-
-      chunkPromises.push(p);
-      return p;
+      } catch (err) {
+        console.warn('Live chunk transcription error:', err);
+      }
     };
 
     window.api.onFlushChunk(async () => {
       if (isRecording) {
-        await flushChunkInternal();
-        statusText.textContent = `chunk ${chunkPromises.length} committed... listening`;
+        statusText.textContent = 'transcribing current speech...';
+        await flushAndTranscribeCurrentAudio();
       }
     });
 
-    const finishFinalRecording = async () => {
-      if (currentRecorder && currentRecorder.state === 'recording') {
-        const oldRecorder = currentRecorder;
-        const oldChunks = currentChunks;
-        const finalBlobPromise = new Promise((resolve) => {
-          oldRecorder.onstop = () => {
-            if (oldChunks.length === 0) resolve(null);
-            else resolve(new Blob(oldChunks, { type: 'audio/webm' }));
-          };
-          try { oldRecorder.stop(); } catch (e) { resolve(null); }
-        });
-
-        const chunkIndex = chunkPromises.length;
-        const p = (async () => {
-          try {
-            const webmBlob = await finalBlobPromise;
-            if (!webmBlob || webmBlob.size === 0) return;
-            let wavBlob = webmBlob;
-            try { wavBlob = await webmToWav(webmBlob); } catch (e) {}
-            const arrayBuffer = await wavBlob.arrayBuffer();
-            const base64 = btoa(
-              new Uint8Array(arrayBuffer).reduce((data, byte) => data + String.fromCharCode(byte), '')
-            );
-            const text = await window.api.transcribeChunk(base64);
-            if (text && text.trim()) {
-              chunkTranscripts[chunkIndex] = text.trim();
-            }
-          } catch (e) {}
-        })();
-        chunkPromises.push(p);
-      }
-
+    mediaRecorder.onstop = async () => {
       stream.getTracks().forEach(t => t.stop());
 
-      if (chunkPromises.length > 0) {
-        statusText.textContent = 'combining speech chunks...';
-        await Promise.all(chunkPromises);
+      if (audioChunks.length === 0) {
+        statusText.textContent = 'no speech detected...';
+        deactivate();
+        return;
       }
 
-      const combinedSpeech = chunkTranscripts.filter(Boolean).join(' ').trim();
-      chunkTranscripts = [];
-      chunkPromises = [];
+      statusText.textContent = 'transcribing final speech...';
+      const blob = new Blob(audioChunks, { type: 'audio/webm' });
 
-      const typedQuestion = questionInput.value.trim();
-      const finalQuestion = typedQuestion || combinedSpeech;
+      let finalQuestion = questionInput.value.trim();
+
+      if (!finalQuestion) {
+        try {
+          const wavBlob = await webmToWav(blob);
+          const arrayBuffer = await wavBlob.arrayBuffer();
+          const base64 = btoa(
+            new Uint8Array(arrayBuffer).reduce((data, byte) => data + String.fromCharCode(byte), '')
+          );
+          const text = await window.api.transcribeChunk(base64);
+          if (text && text.trim()) {
+            latestTranscript = text.trim();
+          }
+        } catch (e) {
+          console.warn('Final transcription error:', e);
+        }
+        finalQuestion = latestTranscript;
+      }
+
+      audioChunks = [];
 
       if (!finalQuestion) {
         statusText.textContent = 'no speech detected...';
@@ -441,9 +390,6 @@ async function startRecording() {
 
       await submitQuestion(finalQuestion);
     };
-
-    // Override stopRecording handling for recorder cleanup
-    activeFinishFinalRecording = finishFinalRecording;
 
     mediaRecorder.start(1000);
     isRecording = true;
@@ -564,11 +510,7 @@ function stopRecording(discard) {
   audioBadge.classList.remove('visible');
   statusDot.classList.remove('recording');
   statusText.textContent = 'transcribing...';
-  if (activeFinishFinalRecording) {
-    const fn = activeFinishFinalRecording;
-    activeFinishFinalRecording = null;
-    fn();
-  } else if (mediaRecorder) {
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
     try { mediaRecorder.stop(); } catch (e) {}
   }
 }
