@@ -232,6 +232,18 @@ function handleAudio(ctx, args) {
   return { message: `✓ Audio source: ${labels[source]}.` };
 }
 
+// /theme [light|dark]
+function handleTheme(ctx, args) {
+  const target = args.trim().toLowerCase();
+  if (target === 'light' || target === 'dark') {
+    ctx.config.theme = target;
+  } else {
+    ctx.config.theme = ctx.config.theme === 'light' ? 'dark' : 'light';
+  }
+  ctx.saveConfig(ctx.config);
+  return { message: `✓ Theme set to: ${ctx.config.theme}` };
+}
+
 // /help
 function handleHelp(ctx, args) {
   return {
@@ -244,6 +256,7 @@ function handleHelp(ctx, args) {
       '/models [p]           list available models',
       '/mute                 suppress responses',
       '/disable              pause all input',
+      '/theme light|dark     light or dark mode',
       '/opacity <0.01-1>     stealth opacity',
       '/clear [all]          reset history',
       '/audio mic|system|off audio source',
@@ -262,6 +275,7 @@ const HANDLERS = {
   '/models': handleModels,
   '/mute': handleMute,
   '/disable': handleDisable,
+  '/theme': handleTheme,
   '/opacity': handleOpacity,
   '/clear': handleClear,
   '/audio': handleAudio,

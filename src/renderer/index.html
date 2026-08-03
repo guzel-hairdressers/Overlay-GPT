@@ -38,6 +38,20 @@
           <span>rec</span>
           <span class="rec-timer" id="recTimer">0:00</span>
         </div>
+        <div class="vad-meter-badge" id="vadMeterBadge" title="VAD Audio Noise & Speech Debug Meter">
+          <div class="vad-meter-track">
+            <div class="vad-meter-fill" id="vadMeterFill"></div>
+            <div class="vad-noise-floor" id="vadNoiseFloorMarker"></div>
+          </div>
+          <span class="vad-db-text" id="vadDbText">-60dB</span>
+          <span class="vad-state-tag" id="vadStateTag">IDLE</span>
+        </div>
+        <div class="mode-badge video-badge" id="videoBadge" title="Live Continuous Screen Stream Active">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
+          </svg>
+          <span>live video</span>
+        </div>
       </div>
     </div>
 
@@ -68,9 +82,9 @@
       <div class="input-hints">
         <span><kbd>⌘⇧Space</kbd> ask</span>
         <span><kbd>⌘⇧S</kbd> screen</span>
+        <span><kbd>⌘⇧V</kbd> video stream</span>
         <span><kbd>⌘⇧A</kbd> audio</span>
-        <span><kbd>⌘⇧M</kbd> mute</span>
-        <span><kbd>⌘⇧D</kbd> disable</span>
+        <span><kbd>⌘⇧F</kbd> fullscreen</span>
       </div>
       <div class="input-hints-secondary">
         <span>/provider &nbsp;/mute &nbsp;/disable &nbsp;/opacity &nbsp;/help</span>
@@ -80,6 +94,7 @@
 
   <script src="vendor-katex.js"></script>
   <script src="markdown.js"></script>
+  <script src="audio-analyzer.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>

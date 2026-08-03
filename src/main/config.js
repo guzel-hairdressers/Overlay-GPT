@@ -17,7 +17,8 @@ const DEFAULT_CONFIG = {
   stealthOpacity: 0.15,
   activeOpacity: 0.85,
   audioSource: 'mic',            // 'mic' | 'system' | 'off'
-  maxRecordingSeconds: 120
+  maxRecordingSeconds: 120,
+  theme: 'dark'                 // 'dark' | 'light'
 };
 
 // ─── Deep merge ────────────────────────────────────────────────────────────────

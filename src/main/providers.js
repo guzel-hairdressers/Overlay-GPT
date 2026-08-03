@@ -1,5 +1,8 @@
 // ─── Provider Registry ────────────────────────────────────────────────────────
 
+const SYSTEM_PROMPT = `You are a real-time Zoom meeting assistant and screen observer.
+Important Context: The incoming prompts are generated from real-time audio speech-to-text or screen video captures. Transcribed text may occasionally contain phonetic errors, background noise artifacts, slight mumbling, or mixed Russian, German, and English language switching. Please intelligently deduce the user's true intended prompt, make sense of any misheard words using context, and provide direct, accurate, and concise answers.`;
+
 const BUILTIN = {
   deepseek: {
     name: 'DeepSeek',
@@ -162,6 +165,7 @@ async function callGemini(provider, history, turn) {
 
   const body = JSON.stringify({
     contents,
+    systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
     generationConfig: { temperature: 0.7, maxOutputTokens: 4096 }
   });
 
@@ -188,7 +192,9 @@ async function callChatCompletions(provider, history, turn) {
     ? endpoint
     : endpoint.replace(/\/$/, '') + '/chat/completions';
 
-  const messages = [];
+  const messages = [
+    { role: 'system', content: SYSTEM_PROMPT }
+  ];
 
   // Prior turns (text-only)
   for (const h of history) {

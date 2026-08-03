@@ -11,6 +11,12 @@ const screenBadge = document.getElementById('screenBadge');
 const audioBadge = document.getElementById('audioBadge');
 const muteBadge = document.getElementById('muteBadge');
 const disableBadge = document.getElementById('disableBadge');
+const videoBadge = document.getElementById('videoBadge');
+const vadMeterBadge = document.getElementById('vadMeterBadge');
+const vadMeterFill = document.getElementById('vadMeterFill');
+const vadNoiseFloorMarker = document.getElementById('vadNoiseFloorMarker');
+const vadDbText = document.getElementById('vadDbText');
+const vadStateTag = document.getElementById('vadStateTag');
 const recTimer = document.getElementById('recTimer');
 const scrollBottomBtn = document.getElementById('scrollBottomBtn');
 const answerArea = document.getElementById('answerArea');
@@ -30,7 +36,7 @@ let maxRecordingSeconds = 120;
 let pendingScreenshot = null;
 let pendingAudio = null;
 
-// Audio recording state
+// Audio recording & noise level analyzer (VAD) state
 let mediaRecorder = null;
 let audioChunks = [];
 let isRecording = false;
@@ -39,7 +45,13 @@ let recordingTimerInterval = null;
 let interimTimer = null;
 let lastTranscript = '';
 let silenceCount = 0;
-const SILENCE_THRESHOLD = 3; // auto-submit after 3 silent intervals
+let audioAnalyzer = null;
+let vadThresholdDb = 2.5;  // dB above background noise floor
+let vadSilenceMs = 1600;    // 1.6s continuous silence triggers auto-submit
+
+// Video screen stream state
+let isVideoStreamActive = false;
+let videoStreamTimer = null;
 
 // ─── Init / Hydrate ──────────────────────────────────────────────────────────
 
@@ -49,6 +61,7 @@ async function hydrateUI() {
     providerId = cfg.activeProvider;
     providerKind = cfg.activeProviderKind;
     overlay.dataset.provider = providerId;
+    overlay.dataset.theme = cfg.theme || 'dark';
     modelBadge.textContent = cfg.activeProviderName + ' · ' + cfg.activeProviderModel;
     muted = cfg.muted;
     disabled = cfg.disabled;
@@ -149,6 +162,46 @@ window.api.onToggleAudio(() => {
   }
 });
 
+window.api.onToggleVideo(() => {
+  if (disabled) return;
+  isVideoStreamActive = !isVideoStreamActive;
+  videoBadge.classList.toggle('visible', isVideoStreamActive);
+
+  if (isVideoStreamActive) {
+    statusText.textContent = 'live video';
+    startVideoSampling();
+  } else {
+    stopVideoSampling();
+    statusText.textContent = isActive ? 'active' : disabled ? 'disabled' : muted ? 'muted' : 'stealth';
+  }
+});
+
+function startVideoSampling() {
+  stopVideoSampling();
+  window.api.captureScreen().then(base64 => {
+    if (base64) {
+      pendingScreenshot = base64;
+      screenBadge.classList.add('visible');
+    }
+  });
+
+  videoStreamTimer = setInterval(async () => {
+    if (!isVideoStreamActive || disabled) return;
+    const base64 = await window.api.captureScreen();
+    if (base64) {
+      pendingScreenshot = base64;
+      screenBadge.classList.add('visible');
+    }
+  }, 2500);
+}
+
+function stopVideoSampling() {
+  if (videoStreamTimer) {
+    clearInterval(videoStreamTimer);
+    videoStreamTimer = null;
+  }
+}
+
 window.api.onMuteChange((m) => {
   muted = m;
   overlay.classList.toggle('muted', m);
@@ -172,6 +225,7 @@ window.api.onDisableChange((d) => {
 window.api.onConfigChange((cfg) => {
   providerId = cfg.activeProvider;
   overlay.dataset.provider = providerId;
+  overlay.dataset.theme = cfg.theme || 'dark';
   modelBadge.textContent = cfg.activeProviderName + ' · ' + cfg.activeProviderModel;
   document.documentElement.style.setProperty('--stealth-opacity', String(cfg.stealthOpacity));
   document.documentElement.style.setProperty('--stealth-hover-opacity',
@@ -290,16 +344,66 @@ async function startRecording() {
     lastTranscript = '';
     silenceCount = 0;
 
-    // Start periodic interim transcription
+    // Real-time Audio Noise Level Analyzer & VAD (silence auto-submit)
+    if (typeof AudioNoiseAnalyzer !== 'undefined') {
+      audioAnalyzer = new AudioNoiseAnalyzer(stream, {
+        onsetThresholdDb: 8.0,
+        offsetThresholdDb: 3.5,
+        silenceMs: vadSilenceMs,
+        onSpeechStart: () => {
+          if (isRecording) {
+            statusText.textContent = 'speaking...';
+          }
+        },
+        onSilence: () => {
+          if (isRecording) {
+            statusText.textContent = 'silence detected... responding';
+            stopRecording(false);
+          }
+        },
+        onVolumeChange: (data) => {
+          if (vadMeterBadge && isRecording) {
+            vadMeterBadge.classList.add('visible');
+            const normVol = Math.max(0, Math.min(100, ((data.currentDb + 90) / 90) * 100));
+            const normFloor = Math.max(0, Math.min(100, (((data.noiseFloorDb + data.onsetThresholdDb) + 90) / 90) * 100));
+
+            vadMeterFill.style.width = normVol + '%';
+            vadNoiseFloorMarker.style.left = normFloor + '%';
+            vadDbText.textContent = `${data.currentDb}dB (flr:${data.noiseFloorDb})`;
+
+            if (data.isCalibrating) {
+              vadMeterBadge.classList.remove('speaking', 'silence');
+              vadStateTag.textContent = `CALIB ${data.calibrationRemainingSec}s`;
+              statusText.textContent = `calibrating noise... ${data.calibrationRemainingSec}s`;
+            } else if (data.isSpeech) {
+              vadMeterBadge.classList.add('speaking');
+              vadMeterBadge.classList.remove('silence');
+              vadStateTag.textContent = 'SPEECH';
+            } else if (data.hasSpoken && data.silenceElapsedMs > 0) {
+              vadMeterBadge.classList.remove('speaking');
+              vadMeterBadge.classList.add('silence');
+              const remSec = Math.max(0, (data.silenceMs - data.silenceElapsedMs) / 1000).toFixed(1);
+              vadStateTag.textContent = `WAIT ${remSec}s`;
+            } else {
+              vadMeterBadge.classList.remove('speaking', 'silence');
+              vadStateTag.textContent = 'QUIET';
+            }
+          }
+        }
+      });
+    }
+
+    // Start periodic interim transcription as backup
     if (providerKind !== 'gemini' && providerKind !== 'openai') {
       interimTimer = setInterval(transcribeInterim, 3000);
     }
 
     activate();
     audioBadge.classList.add('visible');
+    vadMeterBadge.classList.add('visible');
     statusDot.classList.add('recording');
-    statusText.textContent = 'recording';
-    questionInput.placeholder = 'recording... press enter or ⌘⇧A to stop';
+    statusText.textContent = 'listening...';
+    questionInput.placeholder = 'listening... stop talking to submit, or press enter';
 
     recordingStartTime = Date.now();
     recTimer.textContent = '0:00';
@@ -325,6 +429,15 @@ function stopRecording(discard) {
   isRecording = false;
   clearInterval(recordingTimerInterval);
   recordingTimerInterval = null;
+
+  if (vadMeterBadge) {
+    vadMeterBadge.classList.remove('visible', 'speaking', 'silence');
+  }
+
+  if (audioAnalyzer) {
+    audioAnalyzer.stop();
+    audioAnalyzer = null;
+  }
 
   if (discard) {
     clearInterval(interimTimer);
@@ -500,7 +613,8 @@ async function submitQuestion(question) {
   loadingEl.innerHTML = '<span></span><span></span><span></span>';
   answerContent.appendChild(loadingEl);
 
-  answerArea.scrollTop = answerArea.scrollHeight;
+  // Scroll to top of new question
+  questionEcho.scrollIntoView({ behavior: 'smooth', block: 'start' });
 
   try {
     const result = await window.api.sendQuestion(payload);
@@ -534,7 +648,8 @@ async function submitQuestion(question) {
       answerContent.appendChild(answerEl);
     }
 
-    answerArea.scrollTop = answerArea.scrollHeight;
+    // Keep view aligned to top of question & beginning of answer
+    questionEcho.scrollIntoView({ behavior: 'smooth', block: 'start' });
 
   } catch (err) {
     loadingEl.remove();

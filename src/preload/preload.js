@@ -13,6 +13,9 @@ contextBridge.exposeInMainWorld('api', {
   captureScreen: () => ipcRenderer.invoke('capture-screen'),
   getDesktopSources: () => ipcRenderer.invoke('get-desktop-sources'),
 
+  // ── Window management ──
+  toggleFullscreen: () => ipcRenderer.send('toggle-fullscreen'),
+
   // ── Event listeners from main process ──
   onActivateInput: (callback) => {
     ipcRenderer.on('activate-input', () => callback());
@@ -32,6 +35,10 @@ contextBridge.exposeInMainWorld('api', {
 
   onToggleAudio: (callback) => {
     ipcRenderer.on('toggle-audio', () => callback());
+  },
+
+  onToggleVideo: (callback) => {
+    ipcRenderer.on('toggle-video', () => callback());
   },
 
   onMuteChange: (callback) => {

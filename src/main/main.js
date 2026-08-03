@@ -53,7 +53,8 @@ function buildConfigForRenderer(cfg) {
     stealthOpacity: cfg.stealthOpacity,
     activeOpacity: cfg.activeOpacity,
     audioSource: cfg.audioSource,
-    maxRecordingSeconds: cfg.maxRecordingSeconds
+    maxRecordingSeconds: cfg.maxRecordingSeconds,
+    theme: cfg.theme || 'dark'
   };
 }
 
@@ -68,19 +69,18 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: winWidth,
     height: winHeight,
-    minWidth: winWidth,
-    maxWidth: winWidth,
-    minHeight: winHeight,
-    maxHeight: winHeight,
+    minWidth: 320,
+    minHeight: 200,
     x: screenWidth - winWidth - 24,
     y: screenHeight - winHeight - 24,
     transparent: true,
     frame: false,
     alwaysOnTop: true,
     hasShadow: false,
-    resizable: false,
+    resizable: true,
     skipTaskbar: true,
     focusable: true,
+    title: 'Visual Studio Code',
     type: 'panel',
     visualEffectState: 'active',
     useContentSize: true,
@@ -153,15 +153,18 @@ const fs = require('fs');
 const os = require('os');
 const SCRIPT_PATH = path.join(__dirname, '..', '..', 'bin', 'transcribe.py');
 
-function transcribeWhisper(audioBase64) {
+function transcribeWhisper(audioBase64, model) {
   return new Promise((resolve) => {
     const tmpFile = path.join(os.tmpdir(), `overlay-audio-${Date.now()}.wav`);
     const audioBuffer = Buffer.from(audioBase64, 'base64');
     fs.writeFileSync(tmpFile, audioBuffer);
 
-    execFile('python3', [SCRIPT_PATH, tmpFile], {
+    const targetModel = model || 'turbo';
+    const args = [SCRIPT_PATH, tmpFile, '--model', targetModel];
+
+    execFile('python3', args, {
       encoding: 'utf-8',
-      timeout: 30000,
+      timeout: 120000,
       stdio: ['ignore', 'pipe', 'pipe']
     }, (err, stdout) => {
       try { fs.unlinkSync(tmpFile); } catch (e) { /* ignore */ }
@@ -255,8 +258,9 @@ function setupIPC() {
             : transcript;
           finalAudioBase64 = null;
           finalAudioMimeType = null;
+        } else {
+          return { type: 'error', error: '⚠️ Speech transcription failed or no speech detected. Please try speaking again.' };
         }
-        // On failure, fall through — providers.js appends a note
       }
     }
 
@@ -307,11 +311,18 @@ function setupIPC() {
     }
   });
 
-  // Real-time transcription (async, non-blocking)
+  // Real-time transcription (async, non-blocking) — uses tiny for speed
   ipcMain.handle('transcribe-chunk', async (event, audioBase64) => {
     const provider = resolveProvider(config);
     if (!provider || supportsAudio(provider)) return '';
-    return await transcribeWhisper(audioBase64) || '';
+    return await transcribeWhisper(audioBase64, 'tiny') || '';
+  });
+
+  // Toggle fullscreen
+  ipcMain.on('toggle-fullscreen', () => {
+    if (!mainWindow) return;
+    const isFS = mainWindow.isSimpleFullScreen() || mainWindow.isFullScreen();
+    mainWindow.setSimpleFullScreen(!isFS);
   });
 
   // Get config for renderer
@@ -353,7 +364,7 @@ function registerShortcuts() {
     mainWindow.webContents.send('activate-input');
   });
 
-  // Screen capture
+  // Screen capture (Static Screenshot)
   globalShortcut.register('CommandOrControl+Shift+S', async () => {
     if (!mainWindow) return;
     if (config.disabled) return;
@@ -369,6 +380,28 @@ function registerShortcuts() {
       mainWindow.focus();
       mainWindow.webContents.send('screen-captured', imageBase64);
     }
+  });
+
+  // Continuous Video Screen Stream Mode
+  globalShortcut.register('CommandOrControl+Shift+V', () => {
+    if (!mainWindow) return;
+    if (config.disabled) return;
+    if (!isVisible) {
+      isVisible = true;
+      mainWindow.show();
+      mainWindow.webContents.send('visibility-change', true);
+    }
+    isInteractive = true;
+    mainWindow.setIgnoreMouseEvents(false);
+    mainWindow.focus();
+    mainWindow.webContents.send('toggle-video');
+  });
+
+  // Fullscreen toggle
+  globalShortcut.register('CommandOrControl+Shift+F', () => {
+    if (!mainWindow) return;
+    const isFS = mainWindow.isSimpleFullScreen() || mainWindow.isFullScreen();
+    mainWindow.setSimpleFullScreen(!isFS);
   });
 
   // Toggle audio recording
@@ -430,6 +463,14 @@ function registerShortcuts() {
         // Brief peek
       }, 1500);
     }
+    broadcastConfig(config);
+  });
+
+  // Toggle Theme (Light / Dark)
+  globalShortcut.register('CommandOrControl+Shift+T', () => {
+    if (!mainWindow) return;
+    config.theme = config.theme === 'light' ? 'dark' : 'light';
+    saveConfig(CONFIG_PATH, config);
     broadcastConfig(config);
   });
 

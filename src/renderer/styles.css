@@ -99,6 +99,56 @@ html, body {
   --accent-input-focus: rgba(244, 114, 182, 0.08);
 }
 
+/* ─── Light Theme Overrides ────────────────────────────────────────────────── */
+
+.overlay[data-theme='light'] {
+  --bg: rgba(248, 250, 252, 0.90);
+  --bg-stealth: rgba(241, 245, 249, 0.55);
+  --text: #0f172a;
+  --text-dim: rgba(15, 23, 42, 0.55);
+}
+
+.overlay[data-theme='light'] .question-echo {
+  background: rgba(15, 23, 42, 0.04);
+  color: #0f172a;
+}
+
+.overlay[data-theme='light'] .answer-text {
+  color: #1e293b;
+}
+
+.overlay[data-theme='light'] .question-input {
+  color: #0f172a;
+}
+
+.overlay[data-theme='light'] .question-input::placeholder {
+  color: rgba(15, 23, 42, 0.45);
+}
+
+.overlay[data-theme='light'] code {
+  background: rgba(15, 23, 42, 0.06);
+  color: #0f172a;
+}
+
+.overlay[data-theme='light'] pre {
+  background: #f1f5f9;
+  color: #0f172a;
+  border-color: #cbd5e1;
+}
+
+.overlay[data-theme='light'] .vad-meter-badge {
+  background: rgba(15, 23, 42, 0.05);
+  border-color: rgba(15, 23, 42, 0.15);
+}
+
+.overlay[data-theme='light'] .vad-meter-track {
+  background: rgba(15, 23, 42, 0.1);
+}
+
+.overlay[data-theme='light'] .vad-noise-floor {
+  background: rgba(15, 23, 42, 0.7);
+}
+
 /* ─── Overlay Container ──────────────────────────────────────────────────── */
 
 .overlay {
@@ -200,6 +250,13 @@ html, body {
   padding: 10px 14px 6px;
   flex-shrink: 0;
   gap: 8px;
+  -webkit-app-region: drag;
+}
+
+.status-bar input,
+.status-bar button,
+.status-bar .mode-badge {
+  -webkit-app-region: no-drag;
 }
 
 .status-left {
@@ -218,6 +275,7 @@ html, body {
   display: flex;
   align-items: center;
   gap: 6px;
+  -webkit-app-region: no-drag;
 }
 
 .status-dot {
@@ -307,10 +365,100 @@ html, body {
 
 .screen-badge svg { flex-shrink: 0; }
 
+.video-badge {
+  color: #a78bfa;
+  background: rgba(167, 139, 250, 0.12);
+  border: 1px solid rgba(167, 139, 250, 0.3);
+  animation: pulse-purple 2s ease-in-out infinite;
+}
+
+@keyframes pulse-purple {
+  0%, 100% { opacity: 0.8; }
+  50% { opacity: 1; }
+}
+
+.video-badge svg { flex-shrink: 0; }
+
 .audio-badge {
   color: var(--red);
   background: rgba(248, 113, 113, 0.1);
   border: 1px solid rgba(248, 113, 113, 0.2);
+}
+
+/* VAD Meter Badge (Debugging & Noise Floor Visualization) */
+.vad-meter-badge {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 9px;
+  font-family: var(--font);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.vad-meter-badge.visible {
+  display: flex;
+}
+
+.vad-meter-track {
+  position: relative;
+  width: 38px;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.vad-meter-fill {
+  position: absolute;
+  top: 0; left: 0; bottom: 0;
+  width: 0%;
+  background: #34d399; /* Green when quiet */
+  transition: width 0.05s linear, background-color 0.15s ease;
+}
+
+.vad-meter-badge.speaking .vad-meter-fill {
+  background: #f43f5e; /* Red when speaking */
+}
+
+.vad-noise-floor {
+  position: absolute;
+  top: 0; bottom: 0;
+  width: 2px;
+  background: rgba(255, 255, 255, 0.8);
+  box-shadow: 0 0 4px rgba(255, 255, 255, 0.9);
+  left: 30%;
+  pointer-events: none;
+}
+
+.vad-db-text {
+  font-size: 9px;
+  font-weight: 500;
+  color: var(--text-dim);
+  min-width: 32px;
+}
+
+.vad-state-tag {
+  font-size: 8px;
+  font-weight: 600;
+  padding: 1px 4px;
+  border-radius: 3px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-dim);
+}
+
+.vad-meter-badge.speaking .vad-state-tag {
+  background: rgba(244, 63, 94, 0.2);
+  color: #fb7185;
+}
+
+.vad-meter-badge.silence .vad-state-tag {
+  background: rgba(251, 191, 36, 0.2);
+  color: #fbbf24;
 }
 
 .rec-dot {
