@@ -442,6 +442,38 @@ html, body {
   margin: 12px 0;
 }
 
+/* ─── Math (KaTeX) ─────────────────────────────────────────────────────── */
+
+.math-block {
+  margin: 12px 0;
+  padding: 10px 0;
+  overflow-x: auto;
+  text-align: center;
+  color: var(--text);
+}
+
+.math-inline {
+  color: var(--text);
+}
+
+.math-block.math-fallback,
+.math-inline.math-fallback {
+  color: var(--accent);
+  font-family: var(--font);
+  font-size: 11px;
+  padding: 4px 8px;
+  background: var(--accent-soft);
+  border-radius: 4px;
+}
+
+/* KaTeX overrides to match overlay theme */
+.math-block .katex { font-size: 1.1em; }
+.math-inline .katex { font-size: 1em; }
+
+/* Fix KaTeX color in our dark theme */
+.answer-content .katex { color: var(--text); }
+.answer-content .katex .mord { color: var(--text); }
+
 /* ─── Code Blocks ────────────────────────────────────────────────────────── */
 
 .code-block {

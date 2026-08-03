@@ -11,5 +11,8 @@
   },
   "allowScripts": {
     "electron@35.7.5": true
+  },
+  "dependencies": {
+    "katex": "^0.18.1"
   }
 }

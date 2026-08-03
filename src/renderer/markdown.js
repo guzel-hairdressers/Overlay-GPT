@@ -25,6 +25,19 @@ function splitBlocks(md) {
   while (i < lines.length) {
     const line = lines[i];
 
+    // Display math $$...$$ (multi-line)
+    if (/^\$\$/.test(line)) {
+      const mathLines = [];
+      i++; // skip opening $$
+      while (i < lines.length && !/^\$\$/.test(lines[i])) {
+        mathLines.push(lines[i]);
+        i++;
+      }
+      i++; // skip closing $$
+      blocks.push({ type: 'math', content: mathLines.join('\n') });
+      continue;
+    }
+
     // Fenced code block
     if (/^```/.test(line)) {
       const lang = line.slice(3).trim();
@@ -147,6 +160,8 @@ function renderBlock(block) {
     }
     case 'code':
       return renderCodeBlock(block.lang, block.content);
+    case 'math':
+      return renderMath(block.content);
     case 'ul': {
       const el = document.createElement('ul');
       el.className = 'md-list';
@@ -272,6 +287,18 @@ function renderInline(text) {
   }
 
   while (i < text.length) {
+    // Inline math $...$ (single $, not $$)
+    if (text[i] === '$' && text[i + 1] !== '$' && text[i + 1] !== ' ' && text[i + 1] !== '\n') {
+      const end = text.indexOf('$', i + 1);
+      if (end !== -1 && end > i + 1 && text[end - 1] !== ' ' && text[end - 1] !== '\n' &&
+          text.slice(i + 1, end).indexOf('\n') === -1) {  // no newlines in inline math
+        flushText();
+        frag.appendChild(renderInlineMath(text.slice(i + 1, end)));
+        i = end + 1;
+        continue;
+      }
+    }
+
     // Bold **...**
     if (text[i] === '*' && text[i + 1] === '*' && text[i + 2] !== '*' && text[i + 2] !== ' ') {
       const end = text.indexOf('**', i + 2);
@@ -344,6 +371,54 @@ function renderInline(text) {
 
   flushText();
   return frag;
+}
+
+// ─── Math rendering (KaTeX) ──────────────────────────────────────────────────
+
+function renderMath(latex) {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'math-block';
+
+  try {
+    if (typeof katex !== 'undefined') {
+      const html = katex.renderToString(latex.trim(), {
+        displayMode: true,
+        throwOnError: false
+      });
+      wrapper.innerHTML = html;
+    } else {
+      wrapper.textContent = '$$ ' + latex.trim() + ' $$';
+      wrapper.className += ' math-fallback';
+    }
+  } catch (e) {
+    wrapper.textContent = '$$ ' + latex.trim() + ' $$';
+    wrapper.className += ' math-fallback';
+  }
+
+  return wrapper;
+}
+
+function renderInlineMath(latex) {
+  const span = document.createElement('span');
+  span.className = 'math-inline';
+
+  try {
+    if (typeof katex !== 'undefined') {
+      const html = katex.renderToString(latex.trim(), {
+        displayMode: false,
+        throwOnError: false
+      });
+      span.innerHTML = html;
+    } else {
+      span.textContent = '$' + latex.trim() + '$';
+      span.className += ' math-fallback';
+    }
+  } catch (e) {
+    span.textContent = '$' + latex.trim() + '$';
+    span.className += ' math-fallback';
+  }
+
+  return span;
 }
 
 // ─── Export ───────────────────────────────────────────────────────────────────
