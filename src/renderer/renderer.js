@@ -36,6 +36,10 @@ let audioChunks = [];
 let isRecording = false;
 let recordingStartTime = null;
 let recordingTimerInterval = null;
+let interimTimer = null;
+let lastTranscript = '';
+let silenceCount = 0;
+const SILENCE_THRESHOLD = 3; // auto-submit after 3 silent intervals
 
 // ─── Init / Hydrate ──────────────────────────────────────────────────────────
 
@@ -283,6 +287,13 @@ async function startRecording() {
 
     mediaRecorder.start(1000);
     isRecording = true;
+    lastTranscript = '';
+    silenceCount = 0;
+
+    // Start periodic interim transcription
+    if (providerKind !== 'gemini' && providerKind !== 'openai') {
+      interimTimer = setInterval(transcribeInterim, 2000);
+    }
 
     activate();
     audioBadge.classList.add('visible');
@@ -316,6 +327,7 @@ function stopRecording(discard) {
   recordingTimerInterval = null;
 
   if (discard) {
+    clearInterval(interimTimer);
     mediaRecorder.ondataavailable = null;
     mediaRecorder.onstop = () => {
       mediaRecorder.stream?.getTracks().forEach(t => t.stop());
@@ -329,10 +341,53 @@ function stopRecording(discard) {
     return;
   }
 
+  clearInterval(interimTimer);
   audioBadge.classList.remove('visible');
   statusDot.classList.remove('recording');
   statusText.textContent = 'transcribing...';
   mediaRecorder.stop();
+}
+
+// ─── Interim transcription during recording ─────────────────────────────────
+
+async function transcribeInterim() {
+  if (!isRecording || audioChunks.length === 0) return;
+
+  try {
+    const blob = new Blob(audioChunks, { type: 'audio/webm' });
+    const wav = await webmToWav(blob);
+    const arrayBuffer = await wav.arrayBuffer();
+    const base64 = btoa(
+      new Uint8Array(arrayBuffer).reduce((data, byte) => data + String.fromCharCode(byte), '')
+    );
+
+    const transcript = await window.api.transcribeChunk(base64);
+    if (!isRecording) return; // stopped while transcribing
+
+    if (transcript) {
+      const trimmed = transcript.trim();
+      questionInput.value = trimmed;
+      questionInput.placeholder = 'transcribing: ' + trimmed.slice(0, 60) + (trimmed.length > 60 ? '...' : '');
+
+      // Silence detection: if transcript hasn't changed, count silence
+      if (trimmed === lastTranscript) {
+        silenceCount++;
+        if (silenceCount >= SILENCE_THRESHOLD) {
+          // Auto-stop and submit
+          questionInput.value = trimmed;
+          stopRecording(false);
+          return;
+        }
+      } else {
+        silenceCount = 0;
+        lastTranscript = trimmed;
+      }
+    } else {
+      silenceCount++;
+    }
+  } catch (e) {
+    // Whisper still loading or failed — keep listening
+  }
 }
 
 // ─── WebM → WAV transcode ──────────────────────────────────────────────────

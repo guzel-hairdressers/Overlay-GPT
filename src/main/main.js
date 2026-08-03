@@ -148,33 +148,35 @@ async function captureScreen() {
 
 // ─── Whisper transcription ──────────────────────────────────────────────────
 
-const { execFileSync } = require('child_process');
+const { execFile } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const SCRIPT_PATH = path.join(__dirname, '..', '..', 'bin', 'transcribe.py');
 
-async function transcribeWhisper(audioBase64) {
-  try {
+function transcribeWhisper(audioBase64) {
+  return new Promise((resolve) => {
     const tmpFile = path.join(os.tmpdir(), `overlay-audio-${Date.now()}.wav`);
     const audioBuffer = Buffer.from(audioBase64, 'base64');
     fs.writeFileSync(tmpFile, audioBuffer);
 
-    try {
-      const transcript = execFileSync('python3', [SCRIPT_PATH, tmpFile], {
-        encoding: 'utf-8',
-        timeout: 30000,
-        stdio: ['ignore', 'pipe', 'pipe']
-      }).trim();
-      if (transcript && !transcript.startsWith('ERROR:')) {
-        return transcript;
-      }
-    } finally {
+    execFile('python3', [SCRIPT_PATH, tmpFile], {
+      encoding: 'utf-8',
+      timeout: 30000,
+      stdio: ['ignore', 'pipe', 'pipe']
+    }, (err, stdout) => {
       try { fs.unlinkSync(tmpFile); } catch (e) { /* ignore */ }
-    }
-  } catch (err) {
-    console.error('Whisper transcription failed:', err.message);
-  }
-  return null;
+      if (err) {
+        console.error('Whisper failed:', err.message);
+        return resolve(null);
+      }
+      const transcript = (stdout || '').trim();
+      if (transcript && !transcript.startsWith('ERROR:')) {
+        resolve(transcript);
+      } else {
+        resolve(null);
+      }
+    });
+  });
 }
 
 // ─── IPC Handlers ────────────────────────────────────────────────────────────
@@ -303,6 +305,13 @@ function setupIPC() {
       console.error('Failed to get desktop sources:', err);
       return [];
     }
+  });
+
+  // Real-time transcription (async, non-blocking)
+  ipcMain.handle('transcribe-chunk', async (event, audioBase64) => {
+    const provider = resolveProvider(config);
+    if (!provider || supportsAudio(provider)) return '';
+    return await transcribeWhisper(audioBase64) || '';
   });
 
   // Get config for renderer
