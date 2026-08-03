@@ -311,11 +311,9 @@ function setupIPC() {
     }
   });
 
-  // Real-time transcription (async, non-blocking) — uses tiny for speed
+  // Real-time chunk transcription (async, non-blocking) — uses turbo model
   ipcMain.handle('transcribe-chunk', async (event, audioBase64) => {
-    const provider = resolveProvider(config);
-    if (!provider || supportsAudio(provider)) return '';
-    return await transcribeWhisper(audioBase64, 'tiny') || '';
+    return await transcribeWhisper(audioBase64, 'turbo') || '';
   });
 
   // Toggle fullscreen
