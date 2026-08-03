@@ -276,8 +276,6 @@ async function startRecording() {
       );
 
       pendingAudio = { base64, mimeType: finalMimeType };
-      audioBadge.classList.remove('visible');
-      statusDot.classList.remove('recording');
 
       const question = questionInput.value.trim() || '';
       await submitQuestion(question);
@@ -331,7 +329,9 @@ function stopRecording(discard) {
     return;
   }
 
-  statusText.textContent = 'processing';
+  audioBadge.classList.remove('visible');
+  statusDot.classList.remove('recording');
+  statusText.textContent = 'transcribing...';
   mediaRecorder.stop();
 }
 
