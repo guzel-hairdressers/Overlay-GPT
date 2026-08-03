@@ -292,7 +292,7 @@ async function startRecording() {
 
     // Start periodic interim transcription
     if (providerKind !== 'gemini' && providerKind !== 'openai') {
-      interimTimer = setInterval(transcribeInterim, 2000);
+      interimTimer = setInterval(transcribeInterim, 3000);
     }
 
     activate();

@@ -66,7 +66,7 @@ def main():
     # Use tiny model for speed
     result = mlx_whisper.transcribe(
         audio_array,
-        path_or_hf_repo="mlx-community/whisper-tiny"
+        path_or_hf_repo="mlx-community/whisper-small"
     )
 
     text = result.get("text", "").strip()
