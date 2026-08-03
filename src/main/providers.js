@@ -12,14 +12,14 @@ const BUILTIN = {
     name: 'Gemini',
     color: '#6ee7b7',          // green
     kind: 'gemini',
-    models: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash']
+    models: ['gemini-3.6-flash', 'gemini-2.5-pro', 'gemini-2.5-flash']
   },
   openai: {
     name: 'OpenAI',
     color: '#a78bfa',          // purple
     kind: 'openai',
     endpoint: 'https://api.openai.com/v1',
-    models: ['gpt-4o', 'gpt-4o-mini', 'gpt-4.1', 'o4-mini', 'o3']
+    models: ['gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-4o', 'o4-mini']
   },
   anthropic: {
     name: 'Anthropic',
