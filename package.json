@@ -4,7 +4,7 @@
   "description": "Screen-capture-invisible AI overlay powered by Gemini Pro",
   "main": "src/main/main.js",
   "scripts": {
-    "start": "electron ."
+    "start": "cp node_modules/katex/dist/katex.min.js src/renderer/vendor-katex.js && cp node_modules/katex/dist/katex.min.css src/renderer/vendor-katex.css && electron ."
   },
   "devDependencies": {
     "electron": "^35.0.0"

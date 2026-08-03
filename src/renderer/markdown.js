@@ -275,7 +275,6 @@ function renderTable(headerRow, bodyRows) {
 function renderInline(text) {
   const frag = document.createDocumentFragment();
 
-  // Parse inline elements: **bold**, *italic*, `code`, [link](url), <br>
   let i = 0;
   let currentText = '';
 
@@ -286,12 +285,31 @@ function renderInline(text) {
     }
   }
 
+  // Helper: scan past balanced {} groups starting at idx
+  function scanBraces(idx) {
+    if (idx >= text.length || text[idx] !== '{') return idx;
+    let d = 1;
+    idx++;
+    while (idx < text.length && d > 0) {
+      if (text[idx] === '{') d++;
+      if (text[idx] === '}') d--;
+      idx++;
+    }
+    return idx;
+  }
+
+  // Helper: scan superscript/subscript after ^ or _
+  function scanScript(idx) {
+    if (text[idx] === '{') return scanBraces(idx);
+    if (idx < text.length && /[a-zA-Z0-9]/.test(text[idx])) return idx + 1;
+    return idx;
+  }
+
   while (i < text.length) {
-    // Inline math $...$ (single $, not $$)
-    if (text[i] === '$' && text[i + 1] !== '$' && text[i + 1] !== ' ' && text[i + 1] !== '\n') {
+    // --- Explicit $...$ inline math ---
+    if (text[i] === '$' && text[i + 1] !== '$' && text[i + 1] !== ' ') {
       const end = text.indexOf('$', i + 1);
-      if (end !== -1 && end > i + 1 && text[end - 1] !== ' ' && text[end - 1] !== '\n' &&
-          text.slice(i + 1, end).indexOf('\n') === -1) {  // no newlines in inline math
+      if (end > i + 1 && text[end - 1] !== ' ' && text.slice(i + 1, end).indexOf('\n') === -1) {
         flushText();
         frag.appendChild(renderInlineMath(text.slice(i + 1, end)));
         i = end + 1;
@@ -299,8 +317,52 @@ function renderInline(text) {
       }
     }
 
-    // Bold **...**
-    if (text[i] === '*' && text[i + 1] === '*' && text[i + 2] !== '*' && text[i + 2] !== ' ') {
+    // --- Bare LaTeX: \cmd or \cmd{...} or \cmd{...}{...} ---
+    if (text[i] === '\\' && i + 1 < text.length && /[a-zA-Z]/.test(text[i + 1])) {
+      const cmdStart = i;
+      i++; // backslash
+      while (i < text.length && /[a-zA-Z]/.test(text[i])) i++;
+      let end = i;
+
+      // Scan brace groups
+      while (end < text.length && text[end] === '{') {
+        end = scanBraces(end);
+      }
+      // Scan optional ^ or _ after braces
+      while (end < text.length && (text[end] === '^' || text[end] === '_')) {
+        end = scanScript(end + 1);
+      }
+
+      if (end > i) {
+        flushText();
+        frag.appendChild(renderInlineMath(text.slice(cmdStart, end)));
+        i = end;
+        continue;
+      }
+
+      // Standalone symbol like \cdot, \pm, \alpha
+      flushText();
+      frag.appendChild(renderInlineMath(text.slice(cmdStart, i)));
+      continue;
+    }
+
+    // --- Superscript/Subscript: a^2, x_i, x^{n+1} ---
+    if ((text[i] === '^' || text[i] === '_') && i > 0 && /[a-zA-Z0-9)]/.test(text[i - 1])) {
+      // Backtrack to include the variable
+      let start = i - 1;
+      while (start >= 0 && /[a-zA-Z0-9)]/.test(text[start])) start--;
+      start++;
+      let end = scanScript(i + 1);
+      if (end > i + 1) {
+        flushText();
+        frag.appendChild(renderInlineMath(text.slice(start, end)));
+        i = end;
+        continue;
+      }
+    }
+
+    // --- Bold **...** ---
+    if (text[i] === '*' && text[i + 1] === '*' && text[i + 2] && text[i + 2] !== ' ') {
       const end = text.indexOf('**', i + 2);
       if (end !== -1) {
         flushText();
@@ -312,8 +374,9 @@ function renderInline(text) {
       }
     }
 
-    // Italic *...* (but not **)
-    if (text[i] === '*' && text[i + 1] !== '*' && text[i + 1] !== ' ' && i === 0 && text[i - 1] !== '*') {
+    // --- Italic *...* ---
+    if (text[i] === '*' && text[i + 1] !== '*' && text[i + 1] !== ' ' &&
+        (i === 0 || text[i - 1] !== '*')) {
       const end = text.indexOf('*', i + 1);
       if (end !== -1 && text[end - 1] !== ' ') {
         flushText();
@@ -325,7 +388,7 @@ function renderInline(text) {
       }
     }
 
-    // Inline code `...`
+    // --- Inline code `...` ---
     if (text[i] === '`') {
       const end = text.indexOf('`', i + 1);
       if (end !== -1) {
@@ -338,26 +401,26 @@ function renderInline(text) {
       }
     }
 
-    // Link [text](url)
+    // --- Link [text](url) ---
     if (text[i] === '[') {
-      const closeBracket = text.indexOf(']', i);
-      const openParen = text.indexOf('(', closeBracket);
-      const closeParen = text.indexOf(')', openParen);
-      if (closeBracket !== -1 && openParen === closeBracket + 1 && closeParen !== -1) {
+      const cb = text.indexOf(']', i);
+      const op = text.indexOf('(', cb);
+      const cp = text.indexOf(')', op);
+      if (cb !== -1 && op === cb + 1 && cp !== -1) {
         flushText();
         const a = document.createElement('a');
         a.className = 'md-link';
-        a.textContent = text.slice(i + 1, closeBracket);
-        a.href = text.slice(openParen + 1, closeParen);
+        a.textContent = text.slice(i + 1, cb);
+        a.href = text.slice(op + 1, cp);
         a.target = '_blank';
         a.rel = 'noopener';
         frag.appendChild(a);
-        i = closeParen + 1;
+        i = cp + 1;
         continue;
       }
     }
 
-    // Line break (literal \n in inline content — rendered as <br>)
+    // --- Line break ---
     if (text[i] === '\n') {
       flushText();
       frag.appendChild(document.createElement('br'));

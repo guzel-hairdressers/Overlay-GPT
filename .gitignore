@@ -1,3 +1,5 @@
 node_modules/
 .DS_Store
 .claude/
+src/renderer/vendor-katex.js
+src/renderer/vendor-katex.css
