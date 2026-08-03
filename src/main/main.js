@@ -305,13 +305,6 @@ function setupIPC() {
     }
   });
 
-  // Real-time transcription during recording
-  ipcMain.handle('transcribe-chunk', async (event, audioBase64) => {
-    const provider = resolveProvider(config);
-    if (!provider || supportsAudio(provider)) return ''; // native audio support, no need
-    return await transcribeWhisper(audioBase64) || '';
-  });
-
   // Get config for renderer
   ipcMain.handle('get-config', () => {
     return buildConfigForRenderer(config);
