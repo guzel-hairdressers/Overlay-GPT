@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld('api', {
   // ── Questions & Answers ──
   sendQuestion: (payload) => ipcRenderer.invoke('send-question', payload),
   getConfig: () => ipcRenderer.invoke('get-config'),
+  transcribeChunk: (audioBase64) => ipcRenderer.invoke('transcribe-chunk', audioBase64),
 
   // ── Interactive mode ──
   setInteractive: (interactive) => ipcRenderer.send('set-interactive', interactive),

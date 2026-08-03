@@ -146,6 +146,37 @@ async function captureScreen() {
   }
 }
 
+// ─── Whisper transcription ──────────────────────────────────────────────────
+
+const { execFileSync } = require('child_process');
+const fs = require('fs');
+const os = require('os');
+const SCRIPT_PATH = path.join(__dirname, '..', '..', 'bin', 'transcribe.py');
+
+async function transcribeWhisper(audioBase64) {
+  try {
+    const tmpFile = path.join(os.tmpdir(), `overlay-audio-${Date.now()}.wav`);
+    const audioBuffer = Buffer.from(audioBase64, 'base64');
+    fs.writeFileSync(tmpFile, audioBuffer);
+
+    try {
+      const transcript = execFileSync('python3', [SCRIPT_PATH, tmpFile], {
+        encoding: 'utf-8',
+        timeout: 30000,
+        stdio: ['ignore', 'pipe', 'pipe']
+      }).trim();
+      if (transcript && !transcript.startsWith('ERROR:')) {
+        return transcript;
+      }
+    } finally {
+      try { fs.unlinkSync(tmpFile); } catch (e) { /* ignore */ }
+    }
+  } catch (err) {
+    console.error('Whisper transcription failed:', err.message);
+  }
+  return null;
+}
+
 // ─── IPC Handlers ────────────────────────────────────────────────────────────
 
 function setupIPC() {
@@ -215,36 +246,15 @@ function setupIPC() {
     if (audioBase64) {
       const provider = resolveProvider(config);
       if (provider && !supportsAudio(provider)) {
-        try {
-          const { execFileSync } = require('child_process');
-          const fs = require('fs');
-          const os = require('os');
-
-          const tmpFile = path.join(os.tmpdir(), `overlay-audio-${Date.now()}.wav`);
-          const audioBuffer = Buffer.from(audioBase64, 'base64');
-          fs.writeFileSync(tmpFile, audioBuffer);
-
-          const scriptPath = path.join(__dirname, '..', '..', 'bin', 'transcribe.py');
-          try {
-            const transcript = execFileSync('python3', [scriptPath, tmpFile], {
-              encoding: 'utf-8',
-              timeout: 120000,
-              stdio: ['ignore', 'pipe', 'pipe']
-            }).trim();
-            if (transcript && !transcript.startsWith('ERROR:')) {
-              finalQuestion = question
-                ? question + '\n\n[Transcript]: ' + transcript
-                : transcript;
-              finalAudioBase64 = null;
-              finalAudioMimeType = null;
-            }
-          } finally {
-            try { fs.unlinkSync(tmpFile); } catch (e) { /* ignore */ }
-          }
-        } catch (err) {
-          console.error('Whisper transcription failed:', err.message);
-          // Fall through — providers.js will append a note to the text
+        const transcript = await transcribeWhisper(audioBase64);
+        if (transcript) {
+          finalQuestion = question
+            ? question + '\n\n[Transcript]: ' + transcript
+            : transcript;
+          finalAudioBase64 = null;
+          finalAudioMimeType = null;
         }
+        // On failure, fall through — providers.js appends a note
       }
     }
 
@@ -293,6 +303,13 @@ function setupIPC() {
       console.error('Failed to get desktop sources:', err);
       return [];
     }
+  });
+
+  // Real-time transcription during recording
+  ipcMain.handle('transcribe-chunk', async (event, audioBase64) => {
+    const provider = resolveProvider(config);
+    if (!provider || supportsAudio(provider)) return ''; // native audio support, no need
+    return await transcribeWhisper(audioBase64) || '';
   });
 
   // Get config for renderer

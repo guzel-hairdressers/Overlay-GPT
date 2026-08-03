@@ -36,6 +36,8 @@ let audioChunks = [];
 let isRecording = false;
 let recordingStartTime = null;
 let recordingTimerInterval = null;
+let interimTranscriptTimer = null;
+let lastTranscribedLength = 0;
 
 // ─── Init / Hydrate ──────────────────────────────────────────────────────────
 
@@ -285,6 +287,12 @@ async function startRecording() {
 
     mediaRecorder.start(1000);
     isRecording = true;
+    lastTranscribedLength = 0;
+
+    // Start periodic transcription for providers without native audio
+    if (providerKind !== 'gemini' && providerKind !== 'openai') {
+      interimTranscriptTimer = setInterval(transcribeInterim, 3000);
+    }
 
     activate();
     audioBadge.classList.add('visible');
@@ -318,6 +326,7 @@ function stopRecording(discard) {
   recordingTimerInterval = null;
 
   if (discard) {
+    clearInterval(interimTranscriptTimer);
     mediaRecorder.ondataavailable = null;
     mediaRecorder.onstop = () => {
       mediaRecorder.stream?.getTracks().forEach(t => t.stop());
@@ -331,8 +340,35 @@ function stopRecording(discard) {
     return;
   }
 
+  clearInterval(interimTranscriptTimer);
   statusText.textContent = 'processing';
   mediaRecorder.stop();
+}
+
+// ─── Interim transcription during recording ─────────────────────────────────
+
+async function transcribeInterim() {
+  if (!isRecording || audioChunks.length === 0) return;
+  if (audioChunks.length <= lastTranscribedLength) return;
+
+  try {
+    const blob = new Blob(audioChunks, { type: 'audio/webm' });
+    const wav = await webmToWav(blob);
+    const arrayBuffer = await wav.arrayBuffer();
+    const base64 = btoa(
+      new Uint8Array(arrayBuffer).reduce((data, byte) => data + String.fromCharCode(byte), '')
+    );
+    lastTranscribedLength = audioChunks.length;
+
+    const transcript = await window.api.transcribeChunk(base64);
+    if (transcript && isRecording) {
+      questionInput.placeholder = transcript.slice(0, 80) + (transcript.length > 80 ? '...' : '');
+      questionInput.value = transcript;
+      statusText.textContent = 'transcribing';
+    }
+  } catch (e) {
+    // Silent — whisper might still be loading
+  }
 }
 
 // ─── WebM → WAV transcode ──────────────────────────────────────────────────

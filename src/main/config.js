@@ -6,8 +6,8 @@ const fs = require('fs');
 const DEFAULT_CONFIG = {
   providers: {
     deepseek:  { apiKey: '', model: 'deepseek-chat' },
-    gemini:    { apiKey: '', model: 'gemini-2.5-pro' },
-    openai:    { apiKey: '', model: 'gpt-4o' },
+    gemini:    { apiKey: '', model: 'gemini-2.5-flash' },
+    openai:    { apiKey: '', model: 'gpt-4o-mini' },
     anthropic: { apiKey: '', model: 'claude-sonnet-5' }
   },
   customProviders: {},
