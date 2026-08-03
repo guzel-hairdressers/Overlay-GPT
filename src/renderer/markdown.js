@@ -308,15 +308,17 @@ function renderInline(text) {
   }
 
   while (i < text.length) {
-    // --- Inline math: \(...\) and $...$ (single-line only) ---
-    let mathDelim = null;
-    let mathEnd = null;
+    // --- Math delimiters: \(...\), \[...\], $...$, $$...$$ ---
+    let mathDelim = null, mathEnd = null, displayMode = false;
     if (text[i] === '\\' && text[i + 1] === '(') {
-      mathDelim = '\\(';
-      mathEnd = '\\)';
+      mathDelim = '\\('; mathEnd = '\\)'; displayMode = false;
+    } else if (text[i] === '\\' && text[i + 1] === '[') {
+      mathDelim = '\\['; mathEnd = '\\]'; displayMode = true;
+    } else if (text[i] === '$' && text[i + 1] === '$') {
+      mathDelim = '$$'; mathEnd = '$$'; displayMode = true;
+      i++; // skip second $
     } else if (text[i] === '$' && text[i + 1] !== '$' && text[i + 1] !== ' ') {
-      mathDelim = '$';
-      mathEnd = '$';
+      mathDelim = '$'; mathEnd = '$'; displayMode = false;
     }
 
     if (mathDelim) {
@@ -324,7 +326,7 @@ function renderInline(text) {
       const end = text.indexOf(mathEnd, searchFrom);
       if (end > searchFrom && text.slice(searchFrom, end).indexOf('\n') === -1) {
         flushText();
-        frag.appendChild(renderInlineMath(text.slice(searchFrom, end)));
+        frag.appendChild(renderInlineMath(text.slice(searchFrom, end), displayMode));
         i = end + mathEnd.length;
         continue;
       }
