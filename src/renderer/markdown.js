@@ -306,19 +306,35 @@ function renderInline(text) {
   }
 
   while (i < text.length) {
-    // --- Explicit $...$ inline math ---
-    if (text[i] === '$' && text[i + 1] !== '$' && text[i + 1] !== ' ') {
-      const end = text.indexOf('$', i + 1);
-      if (end > i + 1 && text[end - 1] !== ' ' && text.slice(i + 1, end).indexOf('\n') === -1) {
+    // --- Explicit math delimiters: \(...\), \[...\], $...$ ---
+    let mathDelim = null;
+    let mathEnd = null;
+    if (text[i] === '\\' && (text[i + 1] === '(' || text[i + 1] === '[')) {
+      mathDelim = text[i + 1] === '(' ? '\\(' : '\\[';
+      mathEnd = text[i + 1] === '(' ? '\\)' : '\\]';
+    } else if (text[i] === '$' && text[i + 1] !== '$' && text[i + 1] !== ' ') {
+      mathDelim = '$';
+      mathEnd = '$';
+    }
+
+    if (mathDelim) {
+      const searchFrom = i + mathDelim.length;
+      const end = text.indexOf(mathEnd, searchFrom);
+      if (end > searchFrom && text.slice(searchFrom, end).indexOf('\n') === -1) {
         flushText();
-        frag.appendChild(renderInlineMath(text.slice(i + 1, end)));
-        i = end + 1;
+        const displayMode = mathDelim === '\\[' || mathDelim === '$$';
+        frag.appendChild(renderInlineMath(text.slice(searchFrom, end), displayMode));
+        i = end + mathEnd.length;
         continue;
       }
     }
 
     // --- Bare LaTeX: \cmd or \cmd{...} or \cmd{...}{...} ---
     if (text[i] === '\\' && i + 1 < text.length && /[a-zA-Z]/.test(text[i + 1])) {
+      // Remove the \ that was already added to currentText
+      if (currentText.endsWith('\\')) {
+        currentText = currentText.slice(0, -1);
+      }
       const cmdStart = i;
       i++; // backslash
       while (i < text.length && /[a-zA-Z]/.test(text[i])) i++;
@@ -333,15 +349,14 @@ function renderInline(text) {
         end = scanScript(end + 1);
       }
 
+      flushText();
       if (end > i) {
-        flushText();
         frag.appendChild(renderInlineMath(text.slice(cmdStart, end)));
         i = end;
         continue;
       }
 
       // Standalone symbol like \cdot, \pm, \alpha
-      flushText();
       frag.appendChild(renderInlineMath(text.slice(cmdStart, i)));
       continue;
     }
@@ -354,6 +369,11 @@ function renderInline(text) {
       start++;
       let end = scanScript(i + 1);
       if (end > i + 1) {
+        // Remove backtracked chars from currentText to avoid doubling
+        const backtrackLen = i - start;
+        if (backtrackLen > 0 && currentText.length >= backtrackLen) {
+          currentText = currentText.slice(0, currentText.length - backtrackLen);
+        }
         flushText();
         frag.appendChild(renderInlineMath(text.slice(start, end)));
         i = end;
@@ -461,27 +481,29 @@ function renderMath(latex) {
   return wrapper;
 }
 
-function renderInlineMath(latex) {
-  const span = document.createElement('span');
-  span.className = 'math-inline';
+function renderInlineMath(latex, displayMode) {
+  const wrapper = displayMode ? document.createElement('div') : document.createElement('span');
+  wrapper.className = displayMode ? 'math-block' : 'math-inline';
 
   try {
     if (typeof katex !== 'undefined') {
       const html = katex.renderToString(latex.trim(), {
-        displayMode: false,
+        displayMode: !!displayMode,
         throwOnError: false
       });
-      span.innerHTML = html;
+      wrapper.innerHTML = html;
     } else {
-      span.textContent = '$' + latex.trim() + '$';
-      span.className += ' math-fallback';
+      const delim = displayMode ? '$$' : '$';
+      wrapper.textContent = delim + ' ' + latex.trim() + ' ' + delim;
+      wrapper.className += ' math-fallback';
     }
   } catch (e) {
-    span.textContent = '$' + latex.trim() + '$';
-    span.className += ' math-fallback';
+    const delim = displayMode ? '$$' : '$';
+    wrapper.textContent = delim + ' ' + latex.trim() + ' ' + delim;
+    wrapper.className += ' math-fallback';
   }
 
-  return span;
+  return wrapper;
 }
 
 // ─── Export ───────────────────────────────────────────────────────────────────
