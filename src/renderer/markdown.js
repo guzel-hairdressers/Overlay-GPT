@@ -25,15 +25,17 @@ function splitBlocks(md) {
   while (i < lines.length) {
     const line = lines[i];
 
-    // Display math $$...$$ (multi-line)
-    if (/^\$\$/.test(line)) {
+    // Display math $$...$$ or \[...\] (multi-line)
+    if (/^\$\$/.test(line) || /^\\\[/.test(line)) {
+      const isBracket = /^\\\[/.test(line);
+      const endMarker = isBracket ? /^\\\]/ : /^\$\$/;
       const mathLines = [];
-      i++; // skip opening $$
-      while (i < lines.length && !/^\$\$/.test(lines[i])) {
+      i++; // skip opening $$ or \[
+      while (i < lines.length && !endMarker.test(lines[i])) {
         mathLines.push(lines[i]);
         i++;
       }
-      i++; // skip closing $$
+      i++; // skip closing $$ or \]
       blocks.push({ type: 'math', content: mathLines.join('\n') });
       continue;
     }
@@ -306,12 +308,12 @@ function renderInline(text) {
   }
 
   while (i < text.length) {
-    // --- Explicit math delimiters: \(...\), \[...\], $...$ ---
+    // --- Inline math: \(...\) and $...$ (single-line only) ---
     let mathDelim = null;
     let mathEnd = null;
-    if (text[i] === '\\' && (text[i + 1] === '(' || text[i + 1] === '[')) {
-      mathDelim = text[i + 1] === '(' ? '\\(' : '\\[';
-      mathEnd = text[i + 1] === '(' ? '\\)' : '\\]';
+    if (text[i] === '\\' && text[i + 1] === '(') {
+      mathDelim = '\\(';
+      mathEnd = '\\)';
     } else if (text[i] === '$' && text[i + 1] !== '$' && text[i + 1] !== ' ') {
       mathDelim = '$';
       mathEnd = '$';
@@ -322,8 +324,7 @@ function renderInline(text) {
       const end = text.indexOf(mathEnd, searchFrom);
       if (end > searchFrom && text.slice(searchFrom, end).indexOf('\n') === -1) {
         flushText();
-        const displayMode = mathDelim === '\\[' || mathDelim === '$$';
-        frag.appendChild(renderInlineMath(text.slice(searchFrom, end), displayMode));
+        frag.appendChild(renderInlineMath(text.slice(searchFrom, end)));
         i = end + mathEnd.length;
         continue;
       }
