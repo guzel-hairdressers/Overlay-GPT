@@ -324,11 +324,15 @@ function renderInline(text) {
     if (mathDelim) {
       const searchFrom = i + mathDelim.length;
       const end = text.indexOf(mathEnd, searchFrom);
-      if (end > searchFrom && text.slice(searchFrom, end).indexOf('\n') === -1) {
-        flushText();
-        frag.appendChild(renderInlineMath(text.slice(searchFrom, end), displayMode));
-        i = end + mathEnd.length;
-        continue;
+      if (end > searchFrom) {
+        const inner = text.slice(searchFrom, end);
+        // Inline math must be single-line; display math can wrap
+        if (displayMode || inner.indexOf('\n') === -1) {
+          flushText();
+          frag.appendChild(renderInlineMath(inner, displayMode));
+          i = end + mathEnd.length;
+          continue;
+        }
       }
     }
 
