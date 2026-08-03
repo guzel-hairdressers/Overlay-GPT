@@ -97,8 +97,8 @@ MODELS = {
     "tiny": "mlx-community/whisper-tiny",
     "small": "mlx-community/whisper-small",
     "medium": "mlx-community/whisper-medium-mlx",
-    "large-v3-turbo": "mlx-community/whisper-large-v3-turbo-4bit",
-    "turbo": "mlx-community/whisper-large-v3-turbo-4bit"
+    "large-v3-turbo": "mlx-community/whisper-large-v3-turbo",
+    "turbo": "mlx-community/whisper-large-v3-turbo"
 }
 
 def main():
