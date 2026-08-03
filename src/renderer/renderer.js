@@ -49,10 +49,9 @@ let audioAnalyzer = null;
 let vadThresholdDb = 2.5;  // dB above background noise floor
 let vadSilenceMs = 1600;    // 1.6s continuous silence triggers auto-submit
 
-// Audio Chunking & Parallel Transcription state
-let chunkTranscripts = [];
-let chunkPromises = [];
-let activeFinishFinalRecording = null;
+// Audio Chunking state
+let accumulatedTranscript = '';
+let flushChunkHandler = null;  // Single handler reference for cleanup
 
 // Video screen stream state
 let isVideoStreamActive = false;
@@ -305,7 +304,7 @@ async function startRecording() {
     }
 
     audioChunks = [];
-    latestTranscript = '';
+    accumulatedTranscript = '';
     const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
       ? 'audio/webm;codecs=opus' : 'audio/webm';
 
@@ -314,14 +313,19 @@ async function startRecording() {
       if (e.data.size > 0) audioChunks.push(e.data);
     };
 
-    const flushAndTranscribeCurrentAudio = async () => {
-      if (!mediaRecorder || mediaRecorder.state !== 'recording') return;
-      try {
-        mediaRecorder.requestData();
-      } catch (e) {}
+    // Helper: transcribe current audioChunks, clear them, append result to accumulatedTranscript
+    const transcribeAndClearChunks = async () => {
+      if (audioChunks.length === 0) return '';
+      // Force flush any buffered data
+      if (mediaRecorder && mediaRecorder.state === 'recording') {
+        try { mediaRecorder.requestData(); } catch (e) {}
+        // Brief wait for ondataavailable to fire
+        await new Promise(r => setTimeout(r, 100));
+      }
+      if (audioChunks.length === 0) return '';
 
-      if (audioChunks.length === 0) return;
-      const blob = new Blob(audioChunks, { type: 'audio/webm' });
+      const blob = new Blob([...audioChunks], { type: 'audio/webm' });
+      audioChunks = [];  // CLEAR immediately so next chunk starts fresh
 
       try {
         const wavBlob = await webmToWav(blob);
@@ -329,57 +333,52 @@ async function startRecording() {
         const base64 = btoa(
           new Uint8Array(arrayBuffer).reduce((data, byte) => data + String.fromCharCode(byte), '')
         );
-
         const text = await window.api.transcribeChunk(base64);
         if (text && text.trim()) {
-          latestTranscript = text.trim();
-          if (statusText && isRecording) {
-            statusText.textContent = `live: "${latestTranscript}"`;
-          }
+          return text.trim();
         }
       } catch (err) {
-        console.warn('Live chunk transcription error:', err);
+        console.warn('Chunk transcription error:', err);
       }
+      return '';
     };
 
-    window.api.onFlushChunk(async () => {
-      if (isRecording) {
-        statusText.textContent = 'transcribing current speech...';
-        await flushAndTranscribeCurrentAudio();
+    // Register flush handler ONCE, clean up old one first
+    if (flushChunkHandler) {
+      // Remove previous listener to prevent stacking
+      window.api.onFlushChunk(null);
+    }
+    flushChunkHandler = async () => {
+      if (!isRecording) return;
+      statusText.textContent = 'committing chunk...';
+      const chunkText = await transcribeAndClearChunks();
+      if (chunkText) {
+        accumulatedTranscript += (accumulatedTranscript ? ' ' : '') + chunkText;
+        statusText.textContent = `chunk done: "${chunkText.slice(0, 50)}..."`;
+      } else {
+        statusText.textContent = 'chunk empty, listening...';
       }
-    });
+    };
+    window.api.onFlushChunk(flushChunkHandler);
 
     mediaRecorder.onstop = async () => {
       stream.getTracks().forEach(t => t.stop());
 
-      if (audioChunks.length === 0) {
-        statusText.textContent = 'no speech detected...';
-        deactivate();
-        return;
-      }
-
-      statusText.textContent = 'transcribing final speech...';
-      const blob = new Blob(audioChunks, { type: 'audio/webm' });
-
       let finalQuestion = questionInput.value.trim();
 
       if (!finalQuestion) {
-        try {
-          const wavBlob = await webmToWav(blob);
-          const arrayBuffer = await wavBlob.arrayBuffer();
-          const base64 = btoa(
-            new Uint8Array(arrayBuffer).reduce((data, byte) => data + String.fromCharCode(byte), '')
-          );
-          const text = await window.api.transcribeChunk(base64);
-          if (text && text.trim()) {
-            latestTranscript = text.trim();
+        // Transcribe remaining audio since last chunk commit
+        if (audioChunks.length > 0) {
+          statusText.textContent = 'transcribing final chunk...';
+          const lastChunk = await transcribeAndClearChunks();
+          if (lastChunk) {
+            accumulatedTranscript += (accumulatedTranscript ? ' ' : '') + lastChunk;
           }
-        } catch (e) {
-          console.warn('Final transcription error:', e);
         }
-        finalQuestion = latestTranscript;
+        finalQuestion = accumulatedTranscript;
       }
 
+      accumulatedTranscript = '';
       audioChunks = [];
 
       if (!finalQuestion) {
@@ -445,10 +444,6 @@ async function startRecording() {
       });
     }
 
-    // Start periodic interim transcription as backup
-    if (providerKind !== 'gemini' && providerKind !== 'openai') {
-      interimTimer = setInterval(transcribeInterim, 3000);
-    }
 
     activate();
     audioBadge.classList.add('visible');
@@ -515,47 +510,7 @@ function stopRecording(discard) {
   }
 }
 
-// ─── Interim transcription during recording ─────────────────────────────────
 
-async function transcribeInterim() {
-  if (!isRecording || audioChunks.length === 0) return;
-
-  try {
-    const blob = new Blob(audioChunks, { type: 'audio/webm' });
-    const wav = await webmToWav(blob);
-    const arrayBuffer = await wav.arrayBuffer();
-    const base64 = btoa(
-      new Uint8Array(arrayBuffer).reduce((data, byte) => data + String.fromCharCode(byte), '')
-    );
-
-    const transcript = await window.api.transcribeChunk(base64);
-    if (!isRecording) return; // stopped while transcribing
-
-    if (transcript) {
-      const trimmed = transcript.trim();
-      questionInput.value = trimmed;
-      questionInput.placeholder = 'transcribing: ' + trimmed.slice(0, 60) + (trimmed.length > 60 ? '...' : '');
-
-      // Silence detection: if transcript hasn't changed, count silence
-      if (trimmed === lastTranscript) {
-        silenceCount++;
-        if (silenceCount >= SILENCE_THRESHOLD) {
-          // Auto-stop and submit
-          questionInput.value = trimmed;
-          stopRecording(false);
-          return;
-        }
-      } else {
-        silenceCount = 0;
-        lastTranscript = trimmed;
-      }
-    } else {
-      silenceCount++;
-    }
-  } catch (e) {
-    // Whisper still loading or failed — keep listening
-  }
-}
 
 // ─── WebM → WAV transcode ──────────────────────────────────────────────────
 

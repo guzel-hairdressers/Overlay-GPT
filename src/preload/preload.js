@@ -54,6 +54,9 @@ contextBridge.exposeInMainWorld('api', {
   },
 
   onFlushChunk: (callback) => {
-    ipcRenderer.on('flush-chunk', () => callback());
+    ipcRenderer.removeAllListeners('flush-chunk');
+    if (callback) {
+      ipcRenderer.on('flush-chunk', () => callback());
+    }
   }
 });
