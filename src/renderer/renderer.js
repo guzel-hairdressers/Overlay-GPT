@@ -130,6 +130,7 @@ function deactivate() {
   statusText.textContent = disabled ? 'disabled' : muted ? 'muted' : 'stealth';
   questionInput.blur();
   questionInput.value = '';
+  hideAutocomplete();
   clearPendingAttachments();
   window.api.setInteractive(false);
 }
@@ -336,9 +337,143 @@ window.api.onConfigChange((cfg) => {
     String(Math.min(cfg.stealthOpacity * 1.8, 0.4)));
 });
 
+// ─── Slash Command Autocomplete ──────────────────────────────────────────────
+
+const SLASH_COMMANDS = [
+  { cmd: '/provider', args: '<name>', desc: 'switch provider (deepseek, groq, openrouter, gemma...)' },
+  { cmd: '/providers', args: '', desc: 'list configured providers & keys' },
+  { cmd: '/model', args: '[provider] <model>', desc: 'change model for provider' },
+  { cmd: '/models', args: '[provider]', desc: 'list available models' },
+  { cmd: '/key', args: '<provider> <key>', desc: 'set API key or custom endpoint' },
+  { cmd: '/export', args: '[path]', desc: 'export chat transcript to Desktop file' },
+  { cmd: '/copy', args: '', desc: 'copy chat transcript to clipboard' },
+  { cmd: '/audio', args: 'mic|system|off', desc: 'select audio recording source' },
+  { cmd: '/opacity', args: '<0.01-1>', desc: 'stealth mode opacity' },
+  { cmd: '/theme', args: 'light|dark', desc: 'toggle color theme' },
+  { cmd: '/clear', args: '[all]', desc: 'clear conversation history' },
+  { cmd: '/mute', args: '', desc: 'suppress response output' },
+  { cmd: '/disable', args: '', desc: 'pause all input processing' },
+  { cmd: '/help', args: '', desc: 'show command reference manual' }
+];
+
+const autocompletePopup = document.getElementById('autocompletePopup');
+const autocompleteList = document.getElementById('autocompleteList');
+let autocompleteMatches = [];
+let autocompleteIndex = 0;
+
+function updateAutocomplete() {
+  const val = questionInput.value;
+  if (!val.startsWith('/') || val.includes(' ')) {
+    hideAutocomplete();
+    return;
+  }
+
+  const query = val.toLowerCase();
+  autocompleteMatches = SLASH_COMMANDS.filter(c => c.cmd.toLowerCase().startsWith(query));
+
+  if (autocompleteMatches.length === 0) {
+    hideAutocomplete();
+    return;
+  }
+
+  if (autocompleteIndex >= autocompleteMatches.length) {
+    autocompleteIndex = 0;
+  }
+  renderAutocomplete();
+  showAutocomplete();
+}
+
+function renderAutocomplete() {
+  if (!autocompleteList) return;
+  autocompleteList.innerHTML = '';
+  autocompleteMatches.forEach((item, index) => {
+    const el = document.createElement('div');
+    el.className = `autocomplete-item${index === autocompleteIndex ? ' selected' : ''}`;
+    el.innerHTML = `
+      <div class="cmd-left">
+        <span class="cmd-name">${item.cmd}</span>
+        ${item.args ? `<span class="cmd-args">${item.args}</span>` : ''}
+      </div>
+      <span class="cmd-desc">${item.desc}</span>
+    `;
+    el.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      applyAutocomplete(item);
+    });
+    autocompleteList.appendChild(el);
+  });
+  ensureAutocompleteVisible();
+}
+
+function ensureAutocompleteVisible() {
+  if (!autocompleteList) return;
+  const selectedEl = autocompleteList.children[autocompleteIndex];
+  if (selectedEl) {
+    selectedEl.scrollIntoView({ block: 'nearest' });
+  }
+}
+
+function applyAutocomplete(item) {
+  const selected = item || autocompleteMatches[autocompleteIndex];
+  if (!selected) return;
+  questionInput.value = selected.cmd + ' ';
+  hideAutocomplete();
+  questionInput.focus();
+}
+
+function showAutocomplete() {
+  if (autocompletePopup) autocompletePopup.classList.add('visible');
+}
+
+function hideAutocomplete() {
+  if (autocompletePopup) autocompletePopup.classList.remove('visible');
+  autocompleteMatches = [];
+  autocompleteIndex = 0;
+}
+
 // ─── Keyboard Handling ──────────────────────────────────────────────────────
 
+questionInput.addEventListener('input', () => {
+  updateAutocomplete();
+});
+
 questionInput.addEventListener('keydown', async (e) => {
+  const isPopupOpen = autocompletePopup && autocompletePopup.classList.contains('visible');
+
+  if (isPopupOpen) {
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      applyAutocomplete();
+      return;
+    }
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      autocompleteIndex = (autocompleteIndex + 1) % autocompleteMatches.length;
+      renderAutocomplete();
+      return;
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      autocompleteIndex = (autocompleteIndex - 1 + autocompleteMatches.length) % autocompleteMatches.length;
+      renderAutocomplete();
+      return;
+    }
+    if (e.key === 'Enter' && !e.shiftKey) {
+      const val = questionInput.value.trim();
+      const currentMatch = autocompleteMatches[autocompleteIndex];
+      if (currentMatch && val !== currentMatch.cmd) {
+        e.preventDefault();
+        applyAutocomplete();
+        return;
+      }
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      hideAutocomplete();
+      return;
+    }
+  }
+
   if (e.key === 'Escape') {
     e.preventDefault();
     if (isRecording) stopRecording(true);
@@ -358,6 +493,7 @@ questionInput.addEventListener('keydown', async (e) => {
     const question = questionInput.value.trim();
     if ((!question && !pendingScreenshot && !pendingAudio && !hasStagedImageChunks()) || isLoading) return;
 
+    hideAutocomplete();
     await submitQuestion(question);
   }
 });
