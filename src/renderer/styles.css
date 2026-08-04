@@ -836,15 +836,29 @@ html, body {
   bottom: calc(100% + 6px);
   left: 10px;
   right: 10px;
-  background: rgba(18, 18, 22, 0.96);
+  background: var(--bg);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   border: 1px solid var(--accent-border-strong);
   border-radius: 10px;
-  box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.08);
+  box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.4), 0 0 0 1px var(--accent-border);
   overflow: hidden;
   z-index: 9999;
   display: none;
+}
+
+.overlay[data-theme='light'] .autocomplete-popup {
+  background: rgba(248, 250, 252, 0.96);
+  box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.12), 0 0 0 1px rgba(0, 0, 0, 0.08);
+}
+
+.overlay[data-theme='light'] .autocomplete-item {
+  color: var(--text);
+}
+
+.overlay[data-theme='light'] .autocomplete-item.selected,
+.overlay[data-theme='light'] .autocomplete-item:hover {
+  background: var(--accent-soft);
 }
 
 .autocomplete-popup.visible {

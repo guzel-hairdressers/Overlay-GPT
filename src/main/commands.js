@@ -223,15 +223,16 @@ function handleClear(ctx, args) {
   return { message: 'No history to clear.' };
 }
 
-// /audio mic|system|off
+// /audio mic|system|both|off
 function handleAudio(ctx, args) {
-  const source = args.trim().toLowerCase();
-  if (!['mic', 'system', 'off'].includes(source)) {
-    return { error: 'Usage: /audio mic  |  /audio system  |  /audio off' };
+  let source = args.trim().toLowerCase();
+  if (source === 'all' || source === 'mic+system') source = 'both';
+  if (!['mic', 'system', 'both', 'off'].includes(source)) {
+    return { error: 'Usage: /audio mic  |  /audio system  |  /audio both  |  /audio off' };
   }
   ctx.config.audioSource = source;
   ctx.saveConfig(ctx.config);
-  const labels = { mic: 'microphone', system: 'system audio', off: 'disabled' };
+  const labels = { mic: 'microphone', system: 'system audio', both: 'microphone + system audio', off: 'disabled' };
   return { message: `✓ Audio source: ${labels[source]}.` };
 }
 

@@ -508,36 +508,71 @@ document.addEventListener('keydown', (e) => {
 
 // ─── Audio Recording ────────────────────────────────────────────────────────
 
+async function getAudioStream(sourceType) {
+  const getMicStream = async () => {
+    return await navigator.mediaDevices.getUserMedia({ audio: true });
+  };
+
+  const getSystemStream = async () => {
+    const desktopStream = await navigator.mediaDevices.getUserMedia({
+      audio: { mandatory: { chromeMediaSource: 'desktop' } },
+      video: {
+        mandatory: {
+          chromeMediaSource: 'desktop',
+          minWidth: 1, maxWidth: 1,
+          minHeight: 1, maxHeight: 1
+        }
+      }
+    });
+    desktopStream.getVideoTracks().forEach(t => t.stop());
+    return new MediaStream(desktopStream.getAudioTracks());
+  };
+
+  if (sourceType === 'system') {
+    try {
+      return await getSystemStream();
+    } catch (err) {
+      console.warn('System audio capture failed, falling back to mic:', err);
+      return await getMicStream();
+    }
+  }
+
+  if (sourceType === 'both' || sourceType === 'mic+system') {
+    try {
+      const [micStream, systemStream] = await Promise.all([
+        getMicStream(),
+        getSystemStream()
+      ]);
+
+      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const micSource = audioCtx.createMediaStreamSource(micStream);
+      const systemSource = audioCtx.createMediaStreamSource(systemStream);
+      const destination = audioCtx.createMediaStreamDestination();
+
+      micSource.connect(destination);
+      systemSource.connect(destination);
+
+      const combinedStream = destination.stream;
+      combinedStream._sourceTracks = [...micStream.getTracks(), ...systemStream.getTracks()];
+      combinedStream._audioCtx = audioCtx;
+      return combinedStream;
+    } catch (err) {
+      console.warn('Dual audio capture failed, falling back to mic:', err);
+      return await getMicStream();
+    }
+  }
+
+  return await getMicStream();
+}
+
 async function startRecording() {
   if (audioSource === 'off') {
-    showError('Audio is disabled. Use /audio mic or /audio system to enable.');
+    showError('Audio is disabled. Use /audio mic, /audio system, or /audio both to enable.');
     return;
   }
 
   try {
-    let stream;
-
-    if (audioSource === 'system') {
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: { mandatory: { chromeMediaSource: 'desktop' } },
-          video: {
-            mandatory: {
-              chromeMediaSource: 'desktop',
-              minWidth: 1, maxWidth: 1,
-              minHeight: 1, maxHeight: 1
-            }
-          }
-        });
-        stream.getVideoTracks().forEach(t => t.stop());
-        stream = new MediaStream(stream.getAudioTracks());
-      } catch (err) {
-        console.warn('System audio capture failed, falling back to mic:', err);
-        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      }
-    } else {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    }
+    const stream = await getAudioStream(audioSource);
 
     audioChunks = [];
     chunkQueue = [];
@@ -621,7 +656,13 @@ async function startRecording() {
     window.api.onFlushChunk(flushChunkHandler);
 
     mediaRecorder.onstop = async () => {
+      if (stream._sourceTracks) {
+        stream._sourceTracks.forEach(t => t.stop());
+      }
       stream.getTracks().forEach(t => t.stop());
+      if (stream._audioCtx) {
+        try { stream._audioCtx.close(); } catch (e) {}
+      }
 
       let finalQuestion = questionInput.value.trim();
 
