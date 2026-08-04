@@ -3,3 +3,6 @@ node_modules/
 .claude/
 src/renderer/vendor-katex.js
 src/renderer/vendor-katex.css
+config.json
+*.env
+.env*

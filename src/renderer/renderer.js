@@ -49,9 +49,20 @@ let audioAnalyzer = null;
 let vadThresholdDb = 2.5;  // dB above background noise floor
 let vadSilenceMs = 1600;    // 1.6s continuous silence triggers auto-submit
 
-// Audio Chunking state
-let accumulatedTranscript = '';
+// Audio Chunking & Sequential Queue state
+let chunkQueue = [];
+let chunkTranscripts = [];
+let currentChunkIndex = 0;
+let lastSampleOffset = 0;
+let isProcessingChunkQueue = false;
 let flushChunkHandler = null;  // Single handler reference for cleanup
+
+// Image / Screenshot Chunking state (Gemini Vision Bridge)
+let imageQueue = [];
+let imageTranscripts = [];
+let rawImageBases = [];
+let currentImageIndex = 0;
+let isProcessingImageQueue = false;
 
 // Video screen stream state
 let isVideoStreamActive = false;
@@ -126,14 +137,104 @@ function deactivate() {
 function clearPendingAttachments() {
   pendingScreenshot = null;
   pendingAudio = null;
-  screenBadge.classList.remove('visible');
+  resetImageChunkState();
   questionInput.placeholder = disabled ? 'disabled — /disable to resume' : 'ask anything...';
+}
+
+// ─── Image Chunking Queue (Gemini Vision Bridge) ────────────────────────────
+
+async function enqueueImageChunk(imageBase64) {
+  if (!imageBase64) return;
+  const index = currentImageIndex++;
+  imageQueue.push({ index, base64: imageBase64 });
+  rawImageBases[index] = imageBase64;
+
+  if (screenBadge) {
+    screenBadge.classList.add('visible');
+    const badgeSpan = screenBadge.querySelector('span');
+    if (badgeSpan) badgeSpan.textContent = `${currentImageIndex} image${currentImageIndex > 1 ? 's' : ''}`;
+  }
+
+  processImageQueue();
+}
+
+async function processImageQueue() {
+  if (isProcessingImageQueue) return;
+  isProcessingImageQueue = true;
+
+  while (imageQueue.length > 0) {
+    const item = imageQueue.shift();
+    try {
+      if (statusText) {
+        statusText.textContent = `${currentImageIndex} screenshot${currentImageIndex > 1 ? 's' : ''} transcribing...`;
+      }
+      const res = await window.api.transcribeImage(item.base64);
+      if (res && res.transcript) {
+        imageTranscripts[item.index] = res.transcript.trim();
+        if (statusText) {
+          statusText.textContent = `${currentImageIndex} screenshot${currentImageIndex > 1 ? 's' : ''} ready`;
+        }
+      }
+    } catch (err) {
+      console.warn(`Image ${item.index} error:`, err);
+    }
+  }
+
+  isProcessingImageQueue = false;
+}
+
+function hasStagedImageChunks() {
+  return currentImageIndex > 0 || imageQueue.length > 0 || isProcessingImageQueue;
+}
+
+function resetImageChunkState() {
+  imageQueue = [];
+  imageTranscripts = [];
+  rawImageBases = [];
+  currentImageIndex = 0;
+  isProcessingImageQueue = false;
+  if (screenBadge) {
+    screenBadge.classList.remove('visible');
+    const badgeSpan = screenBadge.querySelector('span');
+    if (badgeSpan) badgeSpan.textContent = 'screen';
+  }
 }
 
 // ─── IPC Listeners ──────────────────────────────────────────────────────────
 
 window.api.onActivateInput(() => {
   activate();
+});
+
+window.api.onShortcutScreenshot(async () => {
+  if (disabled || isLoading) return;
+  activate();
+
+  if (hasStagedImageChunks()) {
+    // Second press (or subsequent) → submit with all staged screenshots
+    await submitQuestion();
+  } else {
+    // First press → capture screenshot and start background transcription
+    if (statusText) statusText.textContent = 'capturing screenshot...';
+    const base64 = await window.api.captureScreen();
+    if (base64) {
+      await enqueueImageChunk(base64);
+      questionInput.placeholder = 'type question... Cmd+Space for more, Cmd+Shift+S or Enter to submit';
+      questionInput.focus();
+    }
+  }
+});
+
+window.api.onShortcutSpace(async () => {
+  if (disabled || isLoading) return;
+
+  if (hasStagedImageChunks()) {
+    // Capture additional screenshot — background only, no stealth exit
+    const base64 = await window.api.captureScreen();
+    if (base64) {
+      await enqueueImageChunk(base64);
+    }
+  }
 });
 
 window.api.onDeactivate(() => {
@@ -148,12 +249,11 @@ window.api.onVisibilityChange((visible) => {
   }
 });
 
-window.api.onScreenCaptured((imageBase64) => {
+window.api.onScreenCaptured(async (imageBase64) => {
   if (disabled) return;
-  pendingScreenshot = imageBase64;
-  screenBadge.classList.add('visible');
   activate();
-  questionInput.placeholder = 'ask about the screen... (or press enter)';
+  await enqueueImageChunk(imageBase64);
+  questionInput.placeholder = 'ask about screen(s)... (press Cmd+Shift+S or Enter to submit)';
   questionInput.focus();
 });
 
@@ -256,7 +356,7 @@ questionInput.addEventListener('keydown', async (e) => {
     }
 
     const question = questionInput.value.trim();
-    if ((!question && !pendingScreenshot && !pendingAudio) || isLoading) return;
+    if ((!question && !pendingScreenshot && !pendingAudio && !hasStagedImageChunks()) || isLoading) return;
 
     await submitQuestion(question);
   }
@@ -304,7 +404,12 @@ async function startRecording() {
     }
 
     audioChunks = [];
-    accumulatedTranscript = '';
+    chunkQueue = [];
+    chunkTranscripts = [];
+    currentChunkIndex = 0;
+    lastSampleOffset = 0;
+    isProcessingChunkQueue = false;
+
     const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
       ? 'audio/webm;codecs=opus' : 'audio/webm';
 
@@ -313,51 +418,69 @@ async function startRecording() {
       if (e.data.size > 0) audioChunks.push(e.data);
     };
 
-    // Helper: transcribe current audioChunks, clear them, append result to accumulatedTranscript
-    const transcribeAndClearChunks = async () => {
-      if (audioChunks.length === 0) return '';
-      // Force flush any buffered data
+    const enqueueCurrentChunk = async () => {
       if (mediaRecorder && mediaRecorder.state === 'recording') {
         try { mediaRecorder.requestData(); } catch (e) {}
-        // Brief wait for ondataavailable to fire
-        await new Promise(r => setTimeout(r, 100));
+        await new Promise(r => setTimeout(r, 80));
       }
-      if (audioChunks.length === 0) return '';
+      if (audioChunks.length === 0) return;
 
-      const blob = new Blob([...audioChunks], { type: 'audio/webm' });
-      audioChunks = [];  // CLEAR immediately so next chunk starts fresh
+      // Keep all WebM chunks from start of recording so EBML header is ALWAYS present
+      const fullBlob = new Blob([...audioChunks], { type: 'audio/webm' });
+      const index = currentChunkIndex++;
+      chunkQueue.push({ index, blob: fullBlob });
 
-      try {
-        const wavBlob = await webmToWav(blob);
-        const arrayBuffer = await wavBlob.arrayBuffer();
-        const base64 = btoa(
-          new Uint8Array(arrayBuffer).reduce((data, byte) => data + String.fromCharCode(byte), '')
-        );
-        const text = await window.api.transcribeChunk(base64);
-        if (text && text.trim()) {
-          return text.trim();
+      processChunkQueue();
+    };
+
+    const processChunkQueue = async () => {
+      if (isProcessingChunkQueue) return;
+      isProcessingChunkQueue = true;
+
+      while (chunkQueue.length > 0) {
+        const item = chunkQueue.shift();
+        try {
+          if (statusText && isRecording) {
+            statusText.textContent = `transcribing chunk #${item.index + 1}...`;
+          }
+
+          const { mono, sampleRate } = await decodeWebmToMonoPcm(item.blob);
+          const startSample = Math.min(lastSampleOffset, mono.length);
+          const endSample = mono.length;
+          lastSampleOffset = endSample;
+
+          const chunkSamples = mono.subarray(startSample, endSample);
+          // Only transcribe if we have at least 0.2s of audio (3200 samples at 16kHz)
+          if (chunkSamples.length >= 3200) {
+            const wavBlob = pcmToWavBlob(chunkSamples, sampleRate);
+            const arrayBuffer = await wavBlob.arrayBuffer();
+            const base64 = btoa(
+              new Uint8Array(arrayBuffer).reduce((data, byte) => data + String.fromCharCode(byte), '')
+            );
+            const text = await window.api.transcribeChunk(base64);
+            if (text && text.trim()) {
+              chunkTranscripts[item.index] = text.trim();
+              if (statusText && isRecording) {
+                statusText.textContent = `chunk #${item.index + 1} ready ("${text.trim().slice(0, 30)}...")`;
+              }
+            }
+          }
+        } catch (err) {
+          console.warn(`Chunk ${item.index} transcription error:`, err);
         }
-      } catch (err) {
-        console.warn('Chunk transcription error:', err);
       }
-      return '';
+
+      isProcessingChunkQueue = false;
     };
 
     // Register flush handler ONCE, clean up old one first
     if (flushChunkHandler) {
-      // Remove previous listener to prevent stacking
       window.api.onFlushChunk(null);
     }
     flushChunkHandler = async () => {
       if (!isRecording) return;
       statusText.textContent = 'committing chunk...';
-      const chunkText = await transcribeAndClearChunks();
-      if (chunkText) {
-        accumulatedTranscript += (accumulatedTranscript ? ' ' : '') + chunkText;
-        statusText.textContent = `chunk done: "${chunkText.slice(0, 50)}..."`;
-      } else {
-        statusText.textContent = 'chunk empty, listening...';
-      }
+      await enqueueCurrentChunk();
     };
     window.api.onFlushChunk(flushChunkHandler);
 
@@ -367,18 +490,25 @@ async function startRecording() {
       let finalQuestion = questionInput.value.trim();
 
       if (!finalQuestion) {
-        // Transcribe remaining audio since last chunk commit
-        if (audioChunks.length > 0) {
-          statusText.textContent = 'transcribing final chunk...';
-          const lastChunk = await transcribeAndClearChunks();
-          if (lastChunk) {
-            accumulatedTranscript += (accumulatedTranscript ? ' ' : '') + lastChunk;
+        // Enqueue remaining audio recorded since last Cmd+Space flush
+        await enqueueCurrentChunk();
+
+        // Wait until all background chunk transcriptions are completed
+        if (isProcessingChunkQueue || chunkQueue.length > 0) {
+          statusText.textContent = 'finishing transcription of all chunks...';
+          while (isProcessingChunkQueue || chunkQueue.length > 0) {
+            await new Promise(r => setTimeout(r, 100));
           }
         }
-        finalQuestion = accumulatedTranscript;
+
+        finalQuestion = chunkTranscripts.filter(Boolean).join(' ');
       }
 
-      accumulatedTranscript = '';
+      // Reset chunk state for next session
+      chunkQueue = [];
+      chunkTranscripts = [];
+      currentChunkIndex = 0;
+      lastSampleOffset = 0;
       audioChunks = [];
 
       if (!finalQuestion) {
@@ -487,7 +617,6 @@ function stopRecording(discard) {
   }
 
   if (discard) {
-    clearInterval(interimTimer);
     mediaRecorder.ondataavailable = null;
     mediaRecorder.onstop = () => {
       mediaRecorder.stream?.getTracks().forEach(t => t.stop());
@@ -498,10 +627,13 @@ function stopRecording(discard) {
     statusText.textContent = isActive ? 'active' : disabled ? 'disabled' : muted ? 'muted' : 'stealth';
     questionInput.placeholder = 'ask anything...';
     audioChunks = [];
+    chunkQueue = [];
+    chunkTranscripts = [];
+    currentChunkIndex = 0;
+    isProcessingChunkQueue = false;
     return;
   }
 
-  clearInterval(interimTimer);
   audioBadge.classList.remove('visible');
   statusDot.classList.remove('recording');
   statusText.textContent = 'transcribing...';
@@ -512,17 +644,21 @@ function stopRecording(discard) {
 
 
 
-// ─── WebM → WAV transcode ──────────────────────────────────────────────────
+// ─── WebM → WAV transcode & PCM slicing ───────────────────────────────────
 
-async function webmToWav(webmBlob) {
+async function decodeWebmToMonoPcm(webmBlob) {
   const arrayBuffer = await webmBlob.arrayBuffer();
   const audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
   const decoded = await audioCtx.decodeAudioData(arrayBuffer);
   const mono = decoded.numberOfChannels > 1
     ? mixToMono(decoded)
     : decoded.getChannelData(0);
-
   const sampleRate = decoded.sampleRate;
+  audioCtx.close();
+  return { mono, sampleRate };
+}
+
+function pcmToWavBlob(mono, sampleRate) {
   const numSamples = mono.length;
   const buffer = new ArrayBuffer(44 + numSamples * 2);
   const view = new DataView(buffer);
@@ -549,8 +685,12 @@ async function webmToWav(webmBlob) {
     view.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
   }
 
-  audioCtx.close();
   return new Blob([buffer], { type: 'audio/wav' });
+}
+
+async function webmToWav(webmBlob) {
+  const { mono, sampleRate } = await decodeWebmToMonoPcm(webmBlob);
+  return pcmToWavBlob(mono, sampleRate);
 }
 
 function mixToMono(audioBuffer) {
@@ -577,17 +717,58 @@ function writeString(view, offset, str) {
 
 async function submitQuestion(question) {
   isLoading = true;
+  const userTyped = question !== undefined ? question : questionInput.value.trim();
   questionInput.value = '';
   inputSpinner.classList.add('visible');
 
-  const payload = { question: question || '' };
-  if (pendingScreenshot) payload.imageBase64 = pendingScreenshot;
+  // Wait for all pending image transcriptions to finish (same pattern as audio chunks)
+  if (isProcessingImageQueue || imageQueue.length > 0) {
+    if (statusText) statusText.textContent = 'waiting for screenshot transcriptions...';
+    while (isProcessingImageQueue || imageQueue.length > 0) {
+      await new Promise(r => setTimeout(r, 100));
+    }
+  }
+
+
+  const totalScreenshots = Math.max(currentImageIndex, rawImageBases.length);
+  if (totalScreenshots > 0 && statusText) {
+    statusText.textContent = `${totalScreenshots} screenshot${totalScreenshots > 1 ? 's' : ''} sent`;
+  }
+
+  // Separate native vision vs background text transcripts
+  const realTextTranscripts = imageTranscripts.filter(t => t && !t.includes('[Native Vision Model'));
+
+  let finalPromptText = userTyped;
+
+  if (realTextTranscripts.length > 0) {
+    // Primary model is text-only (e.g. DeepSeek): concatenate background OCR/vision transcripts
+    const screenshotContext = realTextTranscripts
+      .map((t, idx) => `[Screenshot ${idx + 1} Description/Transcript]:\n${t}`)
+      .join('\n\n');
+
+    finalPromptText = userTyped
+      ? `${screenshotContext}\n\n[User Question]: ${userTyped}\n\n[Instruction]: Use the screen context above to answer the user's question directly, solve any visible code or problems, and provide a clear, actionable response.`
+      : `${screenshotContext}\n\n[Instruction]: Analyze the transcribed screen context above. If any code, errors, exercises, questions, or problems are visible on screen, solve them directly and provide a complete, clear answer.`;
+
+    // Clear raw image base64 so base64 isn't attached to text models
+    pendingScreenshot = null;
+  } else if (pendingScreenshot || rawImageBases.length > 0 || currentImageIndex > 0) {
+    // Primary model is native vision (e.g. Gemini, OpenAI, Anthropic): attach raw image directly!
+    if (!pendingScreenshot && rawImageBases.length > 0) {
+      pendingScreenshot = rawImageBases[rawImageBases.length - 1];
+    }
+  }
+
+  const payload = { question: finalPromptText || userTyped || '' };
+  if (pendingScreenshot) {
+    payload.imageBase64 = pendingScreenshot;
+  }
   if (pendingAudio) {
     payload.audioBase64 = pendingAudio.base64;
     payload.audioMimeType = pendingAudio.mimeType;
   }
 
-  const hasScreen = !!pendingScreenshot;
+  const hasScreen = !!pendingScreenshot || realTextTranscripts.length > 0 || totalScreenshots > 0;
   const hasAudio = !!pendingAudio;
 
   clearPendingAttachments();
@@ -604,13 +785,16 @@ async function submitQuestion(question) {
   if (hasScreen || hasAudio) {
     const tagsEl = document.createElement('div');
     tagsEl.className = 'context-tags';
-    if (hasScreen) tagsEl.innerHTML += '<span class="context-tag screen">+ screen</span>';
+    if (hasScreen) {
+      const count = realTextTranscripts.length || totalScreenshots;
+      tagsEl.innerHTML += `<span class="context-tag screen">+ ${count > 0 ? count + ' screenshot' + (count > 1 ? 's' : '') : 'screen'}</span>`;
+    }
     if (hasAudio) tagsEl.innerHTML += '<span class="context-tag audio">+ audio</span>';
     answerContent.appendChild(tagsEl);
   }
 
   // Question echo
-  const displayQuestion = question || (hasScreen ? '[screen capture]' : hasAudio ? '[audio recording]' : '');
+  const displayQuestion = userTyped || (hasScreen ? `[${realTextTranscripts.length || totalScreenshots || 1} screenshot(s)]` : hasAudio ? '[audio recording]' : '');
   const questionEcho = document.createElement('div');
   questionEcho.className = 'question-echo';
   questionEcho.textContent = displayQuestion;

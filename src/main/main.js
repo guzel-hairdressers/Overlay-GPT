@@ -1,10 +1,10 @@
-const { app, BrowserWindow, globalShortcut, ipcMain, screen, desktopCapturer, session } = require('electron');
+const { app, BrowserWindow, globalShortcut, ipcMain, screen, desktopCapturer, session, clipboard, nativeImage } = require('electron');
 const path = require('path');
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
 const { loadConfig, saveConfig } = require('./config');
-const { callProvider, resolveProvider, supportsAudio } = require('./providers');
+const { callProvider, resolveProvider, supportsAudio, supportsVision, transcribeImage } = require('./providers');
 const { dispatchCommand, parseCommand } = require('./commands');
 
 const CONFIG_PATH = path.join(app.getPath('userData'), 'config.json');
@@ -130,13 +130,21 @@ async function captureScreen() {
   try {
     const sources = await desktopCapturer.getSources({
       types: ['screen'],
-      thumbnailSize: { width: 1920, height: 1080 }
+      thumbnailSize: { width: 854, height: 480 }
     });
 
     if (sources.length > 0) {
-      const screenshot = sources[0].thumbnail;
-      const pngBuffer = screenshot.toPNG();
-      return pngBuffer.toString('base64');
+      let image = sources[0].thumbnail;
+      const size = image.getSize();
+
+      // Downsample to max 854px physical width (480p)
+      if (size.width > 854) {
+        image = image.resize({ width: 854, quality: 'good' });
+      }
+
+      const jpegBuffer = image.toJPEG(40);
+      console.log(`[captureScreen] ${size.width}x${size.height} → ${image.getSize().width}x${image.getSize().height}, ${Math.round(jpegBuffer.length / 1024)}KB`);
+      return jpegBuffer.toString('base64');
     }
 
     return null;
@@ -198,8 +206,10 @@ function setupIPC() {
     }
   });
 
-  // Send question — main handler
+  // Send question -> returns answer or stream updates
   ipcMain.handle('send-question', async (event, payload) => {
+    // Reload latest config from disk so config edits take effect immediately
+    config = loadConfig(CONFIG_PATH);
     let question, imageBase64, audioBase64, audioMimeType;
 
     if (typeof payload === 'string') {
@@ -233,6 +243,9 @@ function setupIPC() {
 
     const cmdResult = await dispatchCommand(ctx, question);
     if (cmdResult) {
+      if (cmdResult.copyToClipboard) {
+        try { clipboard.writeText(cmdResult.copyToClipboard); } catch (e) {}
+      }
       // After command, broadcast updated config to renderer
       broadcastConfig(config);
       return cmdResult;
@@ -264,7 +277,8 @@ function setupIPC() {
       }
     }
 
-    const hist = historyByProvider[config.activeProvider] || (historyByProvider[config.activeProvider] = []);
+    const activeId = config.activeProvider;
+    const hist = historyByProvider[activeId] || (historyByProvider[activeId] = []);
     const result = await callProvider(config, hist, finalQuestion, {
       imageBase64,
       audioBase64: finalAudioBase64,
@@ -316,6 +330,24 @@ function setupIPC() {
     return await transcribeWhisper(audioBase64, 'turbo') || '';
   });
 
+  // Gemini / Groq screenshot transcription
+  ipcMain.handle('transcribe-image', async (event, imageBase64) => {
+    return await transcribeImage(config, imageBase64);
+  });
+
+  // Clipboard write bridge
+  ipcMain.handle('write-clipboard', (event, text) => {
+    try {
+      if (typeof text === 'string') {
+        clipboard.writeText(text);
+        return true;
+      }
+    } catch (err) {
+      console.error('Clipboard write error:', err);
+    }
+    return false;
+  });
+
   // Toggle fullscreen
   ipcMain.on('toggle-fullscreen', () => {
     if (!mainWindow) return;
@@ -332,13 +364,17 @@ function setupIPC() {
 // ─── Global Shortcuts ────────────────────────────────────────────────────────
 
 function registerShortcuts() {
-  // Toggle overlay visibility
+  // Toggle overlay visibility & activation
   globalShortcut.register('CommandOrControl+Shift+G', () => {
     if (!mainWindow) return;
     isVisible = !isVisible;
     if (isVisible) {
       mainWindow.show();
+      isInteractive = true;
+      mainWindow.setIgnoreMouseEvents(false);
+      mainWindow.focus();
       mainWindow.webContents.send('visibility-change', true);
+      mainWindow.webContents.send('activate-input');
     } else {
       isInteractive = false;
       mainWindow.setIgnoreMouseEvents(true, { forward: true });
@@ -348,26 +384,19 @@ function registerShortcuts() {
     }
   });
 
-  // Activate input mode
-  globalShortcut.register('CommandOrControl+Shift+Space', () => {
-    if (!mainWindow) return;
-    if (!isVisible) {
-      isVisible = true;
-      mainWindow.show();
-      mainWindow.webContents.send('visibility-change', true);
-    }
-    isInteractive = true;
-    mainWindow.setIgnoreMouseEvents(false);
-    mainWindow.focus();
-    mainWindow.webContents.send('activate-input');
-  });
+  // Cmd+Space — background only: flush audio chunk + capture additional screenshot
+  try {
+    globalShortcut.register('CommandOrControl+Space', () => {
+      if (!mainWindow) return;
+      mainWindow.webContents.send('flush-chunk');
+      mainWindow.webContents.send('shortcut-space');
+    });
+  } catch (e) {}
 
-  // Screen capture (Static Screenshot)
-  globalShortcut.register('CommandOrControl+Shift+S', async () => {
-    if (!mainWindow) return;
-    if (config.disabled) return;
-    const imageBase64 = await captureScreen();
-    if (imageBase64) {
+  // Cmd+Shift+Space — activate overlay out of stealth mode
+  try {
+    globalShortcut.register('CommandOrControl+Shift+Space', () => {
+      if (!mainWindow) return;
       if (!isVisible) {
         isVisible = true;
         mainWindow.show();
@@ -376,8 +405,23 @@ function registerShortcuts() {
       isInteractive = true;
       mainWindow.setIgnoreMouseEvents(false);
       mainWindow.focus();
-      mainWindow.webContents.send('screen-captured', imageBase64);
+      mainWindow.webContents.send('activate-input');
+    });
+  } catch (e) {}
+
+  // Screen capture (Static Screenshot / Submit Screenshot Prompt)
+  globalShortcut.register('CommandOrControl+Shift+S', async () => {
+    if (!mainWindow) return;
+    if (config.disabled) return;
+    if (!isVisible) {
+      isVisible = true;
+      mainWindow.show();
+      mainWindow.webContents.send('visibility-change', true);
     }
+    isInteractive = true;
+    mainWindow.setIgnoreMouseEvents(false);
+    mainWindow.focus();
+    mainWindow.webContents.send('shortcut-screenshot');
   });
 
   // Continuous Video Screen Stream Mode
@@ -473,11 +517,6 @@ function registerShortcuts() {
   });
 
   // Chunk Commit Shortcut (flush current audio chunk & continue recording)
-  globalShortcut.register('CommandOrControl+Space', () => {
-    if (!mainWindow) return;
-    mainWindow.webContents.send('flush-chunk');
-  });
-
   globalShortcut.register('CommandOrControl+Shift+C', () => {
     if (!mainWindow) return;
     mainWindow.webContents.send('flush-chunk');

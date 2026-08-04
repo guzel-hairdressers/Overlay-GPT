@@ -216,14 +216,30 @@ function renderCodeBlock(lang, code) {
   const copyBtn = document.createElement('button');
   copyBtn.className = 'code-copy-btn';
   copyBtn.textContent = 'copy';
-  copyBtn.addEventListener('click', () => {
-    navigator.clipboard.writeText(code).then(() => {
+  copyBtn.addEventListener('click', async () => {
+    try {
+      let ok = false;
+      if (window.api && window.api.writeClipboard) {
+        ok = await window.api.writeClipboard(code);
+      }
+      if (!ok && navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(code);
+        ok = true;
+      }
+      if (!ok) {
+        const ta = document.createElement('textarea');
+        ta.value = code;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+      }
       copyBtn.textContent = 'copied!';
       setTimeout(() => { copyBtn.textContent = 'copy'; }, 1500);
-    }).catch(() => {
+    } catch (e) {
       copyBtn.textContent = 'failed';
       setTimeout(() => { copyBtn.textContent = 'copy'; }, 1500);
-    });
+    }
   });
 
   header.appendChild(langLabel);

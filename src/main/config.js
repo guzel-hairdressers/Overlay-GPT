@@ -6,12 +6,14 @@ const fs = require('fs');
 const DEFAULT_CONFIG = {
   providers: {
     deepseek:  { apiKey: '', model: 'deepseek-chat' },
-    gemini:    { apiKey: '', model: 'gemini-3.6-flash' },
-    openai:    { apiKey: '', model: 'gpt-5.6-luna' },
-    anthropic: { apiKey: '', model: 'claude-sonnet-5' }
+    gemini:     { apiKey: '', model: 'gemini-2.0-flash' },
+    openai:     { apiKey: '', model: 'gpt-5.6-luna' },
+    anthropic:  { apiKey: '', model: 'claude-sonnet-5' },
+    groq:       { apiKey: '', model: 'qwen/qwen3.6-27b' },
+    openrouter: { apiKey: '', model: 'google/gemma-4-26b-a4b-it:free' }
   },
   customProviders: {},
-  activeProvider: 'deepseek',
+  activeProvider: 'groq',
   muted: false,
   disabled: false,
   stealthOpacity: 0.15,

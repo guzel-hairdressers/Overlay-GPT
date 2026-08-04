@@ -1,4 +1,7 @@
 const { resolveProvider, fetchModels } = require('./providers');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
 
 // ─── Key masking ───────────────────────────────────────────────────────────────
 
@@ -58,8 +61,8 @@ function handleKey(ctx, args) {
   }
 
   // Built-in provider
-  if (!['deepseek', 'gemini', 'openai', 'anthropic'].includes(target)) {
-    return { error: `Unknown provider "${target}". Use: deepseek, gemini, openai, anthropic, or /key custom <name> <endpoint> [key]` };
+  if (!['deepseek', 'gemini', 'openai', 'anthropic', 'groq', 'openrouter'].includes(target)) {
+    return { error: `Unknown provider "${target}". Use: deepseek, gemini, openai, anthropic, groq, openrouter, or /key custom <name> <endpoint> [key]` };
   }
 
   const key = parts.slice(1).join(' ');
@@ -244,6 +247,79 @@ function handleTheme(ctx, args) {
   return { message: `✓ Theme set to: ${ctx.config.theme}` };
 }
 
+// /copy
+function handleCopyChat(ctx, args) {
+  let allHist = [];
+
+  const activeId = ctx.config.activeProvider;
+  if (ctx.historyByProvider[activeId] && ctx.historyByProvider[activeId].length > 0) {
+    allHist = ctx.historyByProvider[activeId];
+  } else {
+    for (const [pId, h] of Object.entries(ctx.historyByProvider || {})) {
+      if (h && h.length > 0) {
+        allHist = allHist.concat(h);
+      }
+    }
+  }
+
+  if (allHist.length === 0) {
+    return { message: 'Chat history is empty.' };
+  }
+
+  const formatted = allHist.map(h => {
+    const roleLabel = h.role === 'assistant' ? 'Assistant' : 'User';
+    return `--- ${roleLabel} ---\n${h.content}`;
+  }).join('\n\n');
+
+  return { copyToClipboard: formatted, message: `✓ Copied entire chat transcript (${allHist.length} messages) to clipboard!` };
+}
+
+// /export [path]
+function handleExportChat(ctx, args) {
+  let allHist = [];
+
+  const activeId = ctx.config.activeProvider;
+  if (ctx.historyByProvider[activeId] && ctx.historyByProvider[activeId].length > 0) {
+    allHist = ctx.historyByProvider[activeId];
+  } else {
+    for (const [pId, h] of Object.entries(ctx.historyByProvider || {})) {
+      if (h && h.length > 0) {
+        allHist = allHist.concat(h);
+      }
+    }
+  }
+
+  if (allHist.length === 0) {
+    return { message: 'Chat history is empty.' };
+  }
+
+  const formatted = allHist.map(h => {
+    const roleLabel = h.role === 'assistant' ? 'Assistant' : 'User';
+    return `### ${roleLabel}\n${h.content}`;
+  }).join('\n\n---\n\n');
+
+  let targetPath = (args || '').trim();
+  if (!targetPath) {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    targetPath = path.join(os.homedir(), 'Desktop', `overlay_chat_${timestamp}.md`);
+  } else {
+    if (targetPath.startsWith('~')) {
+      targetPath = path.join(os.homedir(), targetPath.slice(1));
+    }
+    if (!path.isAbsolute(targetPath)) {
+      targetPath = path.join(os.homedir(), 'Desktop', targetPath);
+    }
+  }
+
+  try {
+    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+    fs.writeFileSync(targetPath, `# Overlay GPT Chat Export\n\n*Exported: ${new Date().toLocaleString()}*\n\n${formatted}\n`, 'utf8');
+    return { message: `✓ Exported chat transcript (${allHist.length} messages) to:\n${targetPath}` };
+  } catch (err) {
+    return { error: `Failed to export chat: ${err.message}` };
+  }
+}
+
 // /help
 function handleHelp(ctx, args) {
   return {
@@ -260,6 +336,8 @@ function handleHelp(ctx, args) {
       '/opacity <0.01-1>     stealth opacity',
       '/clear [all]          reset history',
       '/audio mic|system|off audio source',
+      '/copy                 copy full chat transcript to clipboard',
+      '/export [path]        export chat to Desktop or specified file path',
       '/help                 this list'
     ].join('\n')
   };
@@ -279,6 +357,8 @@ const HANDLERS = {
   '/opacity': handleOpacity,
   '/clear': handleClear,
   '/audio': handleAudio,
+  '/copy': handleCopyChat,
+  '/export': handleExportChat,
   '/help': handleHelp
 };
 

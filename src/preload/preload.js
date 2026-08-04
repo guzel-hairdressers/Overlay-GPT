@@ -16,9 +16,23 @@ contextBridge.exposeInMainWorld('api', {
   // ── Window management ──
   toggleFullscreen: () => ipcRenderer.send('toggle-fullscreen'),
 
+  // ── Image vision transcription ──
+  transcribeImage: (imageBase64) => ipcRenderer.invoke('transcribe-image', imageBase64),
+
+  // ── Native Clipboard ──
+  writeClipboard: (text) => ipcRenderer.invoke('write-clipboard', text),
+
   // ── Event listeners from main process ──
   onActivateInput: (callback) => {
     ipcRenderer.on('activate-input', () => callback());
+  },
+
+  onShortcutScreenshot: (callback) => {
+    ipcRenderer.on('shortcut-screenshot', () => callback());
+  },
+
+  onShortcutSpace: (callback) => {
+    ipcRenderer.on('shortcut-space', () => callback());
   },
 
   onDeactivate: (callback) => {

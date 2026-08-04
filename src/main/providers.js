@@ -1,7 +1,7 @@
 // ─── Provider Registry ────────────────────────────────────────────────────────
 
 const SYSTEM_PROMPT = `You are a real-time Zoom meeting assistant and screen observer.
-Important Context: The incoming prompts are generated from real-time audio speech-to-text or screen video captures. Transcribed text may occasionally contain phonetic errors, background noise artifacts, slight mumbling, or mixed Russian, German, and English language switching. Please intelligently deduce the user's true intended prompt, make sense of any misheard words using context, and provide direct, accurate, and concise answers.`;
+Important Context: The incoming prompts may contain transcribed text from audio speech-to-text or screen OCR/vision transcriptions. Transcribed text may occasionally contain minor phonetic or OCR formatting artifacts. Please deduce the user's intended prompt, make sense of the transcribed context, and solve any visible code, errors, exercises, questions, or problems directly. Provide concise, clear, and actionable answers.`;
 
 const BUILTIN = {
   deepseek: {
@@ -15,7 +15,7 @@ const BUILTIN = {
     name: 'Gemini',
     color: '#6ee7b7',          // green
     kind: 'gemini',
-    models: ['gemini-3.6-flash', 'gemini-2.5-pro', 'gemini-2.5-flash']
+    models: ['gemini-2.5-flash', 'gemini-2.5-pro']
   },
   openai: {
     name: 'OpenAI',
@@ -29,6 +29,20 @@ const BUILTIN = {
     color: '#fb923c',          // orange
     kind: 'anthropic',
     models: ['claude-sonnet-5', 'claude-opus-5', 'claude-fable-5', 'claude-haiku-4-5']
+  },
+  groq: {
+    name: 'Groq',
+    color: '#f97316',          // bright orange
+    kind: 'openai-compatible',
+    endpoint: 'https://api.groq.com/openai/v1',
+    models: ['qwen/qwen3.6-27b', 'llama-3.3-70b-versatile', 'llama-3.1-8b-instant']
+  },
+  openrouter: {
+    name: 'OpenRouter',
+    color: '#6366f1',          // indigo
+    kind: 'openai-compatible',
+    endpoint: 'https://openrouter.ai/api/v1',
+    models: ['qwen/qwen-2.5-vl-72b-instruct:free', 'google/gemini-2.0-flash-exp:free', 'deepseek/deepseek-r1:free', 'meta-llama/llama-3.3-70b-instruct:free']
   }
 };
 
@@ -154,7 +168,7 @@ async function callGemini(provider, history, turn) {
   const parts = [];
   if (turn.text) parts.push({ text: turn.text });
   if (turn.image) {
-    parts.push({ inlineData: { mimeType: 'image/png', data: turn.image } });
+    parts.push({ inlineData: { mimeType: 'image/jpeg', data: turn.image } });
   }
   if (turn.audio) {
     parts.push({ inlineData: { mimeType: turn.audio.mimeType, data: turn.audio.data } });
@@ -212,7 +226,7 @@ async function callChatCompletions(provider, history, turn) {
     contentParts.push({
       type: 'image_url',
       image_url: {
-        url: `data:image/png;base64,${turn.image}`,
+        url: `data:image/jpeg;base64,${turn.image}`,
         detail: 'low'
       }
     });
@@ -229,8 +243,16 @@ async function callChatCompletions(provider, history, turn) {
     });
   }
 
-  // If we have multimedia parts, use content array; otherwise plain text
-  if (contentParts.length > 1 || turn.image || turn.audio) {
+  // For Groq or text-only models, wrap image data into text string prompt to prevent 400 errors
+  if (provider.id === 'groq' || (!turn.image && !turn.audio)) {
+    let textPrompt = turn.text || '';
+    if (turn.image && !textPrompt.includes('data:image')) {
+      textPrompt = textPrompt
+        ? `[Screenshot Image Attached (Base64 JPEG)]:\ndata:image/jpeg;base64,${turn.image}\n\n[User Question]: ${textPrompt}`
+        : `[Screenshot Image Attached (Base64 JPEG)]:\ndata:image/jpeg;base64,${turn.image}\n\nPlease analyze and explain this screenshot in detail.`;
+    }
+    messages.push({ role: 'user', content: textPrompt || '[query]' });
+  } else if (contentParts.length > 0) {
     messages.push({ role: 'user', content: contentParts });
   } else {
     messages.push({ role: 'user', content: turn.text || '' });
@@ -274,7 +296,7 @@ async function callAnthropic(provider, history, turn) {
       type: 'image',
       source: {
         type: 'base64',
-        media_type: 'image/png',
+        media_type: 'image/jpeg',
         data: turn.image
       }
     });
@@ -395,7 +417,8 @@ async function transcribeAudio(config, audioBase64, audioMimeType) {
     return { error: 'No Gemini API key configured. Set one with /key gemini <key> to enable audio transcription for this provider.' };
   }
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiProvider.apiKey}`;
+  const model = 'gemini-1.5-flash';
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiProvider.apiKey}`;
 
   const body = JSON.stringify({
     contents: [{
@@ -426,6 +449,145 @@ async function transcribeAudio(config, audioBase64, audioMimeType) {
   }
 }
 
+// ─── Image / Screenshot transcription bridge (OpenRouter Qwen-VL / Gemini / Groq) ──
+
+async function transcribeImageWithOpenRouter(provider, imageBase64) {
+  const models = [
+    'google/gemma-4-26b-a4b-it:free',
+    'openrouter/free'
+  ];
+
+  for (const model of models) {
+    try {
+      const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${provider.apiKey}`
+        },
+        body: JSON.stringify({
+          model,
+          messages: [{
+            role: 'user',
+            content: [
+              { type: 'text', text: 'You are a verbatim OCR and screen reader. Transcribe ALL visible text, code, numbers, UI labels, buttons, headers, error messages, and visual structure in this screenshot comprehensively and verbatim. Preserve code indentation, symbols, line numbers, and full questions exactly as shown on screen.' },
+              { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${imageBase64}`, detail: 'low' } }
+            ]
+          }],
+          temperature: 0.1,
+          max_tokens: 2048
+        })
+      });
+      const data = await res.json();
+      if (res.ok && data?.choices?.[0]?.message?.content) {
+        return { transcript: data.choices[0].message.content.trim() };
+      }
+      if (data && data.error) {
+        console.warn(`OpenRouter Vision (${model}) error:`, data.error.message || JSON.stringify(data.error));
+      }
+    } catch (e) {}
+  }
+  return null;
+}
+
+async function transcribeImageWithGemini(geminiProvider, imageBase64) {
+  const models = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-2.0-flash'];
+  for (const model of models) {
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiProvider.apiKey}`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{
+            role: 'user',
+            parts: [
+              { text: 'You are a verbatim OCR and screen reader. Transcribe ALL visible text, code, numbers, UI labels, buttons, headers, error messages, and visual structure in this screenshot comprehensively and verbatim. Preserve code indentation, symbols, line numbers, and full questions exactly as shown on screen.' },
+              { inlineData: { mimeType: 'image/jpeg', data: imageBase64 } }
+            ]
+          }],
+          generationConfig: { temperature: 0.1, maxOutputTokens: 4096 }
+        })
+      });
+      const data = await res.json();
+      const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (res.ok && text) return { transcript: text.trim() };
+    } catch (e) {}
+  }
+  return null;
+}
+
+async function transcribeImageWithGroq(groqProvider, imageBase64) {
+  const model = groqProvider.model || 'qwen/qwen3.6-27b';
+
+  try {
+    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${groqProvider.apiKey}`
+      },
+      body: JSON.stringify({
+        model,
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'text', text: 'You are a verbatim OCR and screen reader. Transcribe ALL visible text, code, numbers, UI labels, buttons, headers, error messages, and visual structure in this screenshot comprehensively and verbatim. Preserve code indentation, symbols, line numbers, and full questions exactly as shown on screen.' },
+            { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${imageBase64}`, detail: 'low' } }
+          ]
+        }],
+        temperature: 0.1,
+        max_tokens: 2048
+      })
+    });
+
+    const data = await res.json();
+    if (res.ok && data?.choices?.[0]?.message?.content) {
+      return { transcript: data.choices[0].message.content.trim() };
+    }
+    if (data && data.error) {
+      return { error: `Groq (${model}): ${data.error.message || JSON.stringify(data.error)}` };
+    }
+  } catch (e) {
+    return { error: `Groq Network Error: ${e.message}` };
+  }
+  return null;
+}
+
+function supportsVision(provider) {
+  if (!provider) return false;
+  const id = (provider.id || '').toLowerCase();
+  if (['gemini', 'openai', 'anthropic'].includes(id)) return true;
+  if (id === 'openrouter' && (provider.model || '').toLowerCase().includes('vl')) return true;
+  return false;
+}
+
+async function transcribeImage(config, imageBase64) {
+  // If active primary provider supports vision natively, skip background transcription!
+  const active = resolveProvider(config);
+  if (active && supportsVision(active)) {
+    return { transcript: '[Native Vision Model - raw image attached directly]' };
+  }
+
+  // 1. Groq Qwen (qwen/qwen3.6-27b) FIRST — fast ultra-low-latency LPU transcription
+  const groqProvider = resolveProvider(config, 'groq');
+  if (groqProvider && groqProvider.apiKey) {
+    const res = await transcribeImageWithGroq(groqProvider, imageBase64);
+    if (res && res.transcript) return res;
+    if (res && res.error) console.warn('Groq transcription failed:', res.error);
+  }
+
+  // 2. OpenRouter (google/gemma-4-26b-a4b-it:free) SECOND (fallback)
+  const openrouterProvider = resolveProvider(config, 'openrouter');
+  if (openrouterProvider && openrouterProvider.apiKey) {
+    const res = await transcribeImageWithOpenRouter(openrouterProvider, imageBase64);
+    if (res && res.transcript) return res;
+    if (res && res.error) console.warn('OpenRouter transcription failed:', res.error);
+  }
+
+  return { error: '⚠️ Vision transcription failed. Please set a Groq key (/key groq <key>) or OpenRouter key (/key openrouter <key>).' };
+}
+
 // ─── Exports ──────────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -435,5 +597,7 @@ module.exports = {
   fetchModels,
   audioPolicy,
   supportsAudio,
-  transcribeAudio
+  supportsVision,
+  transcribeAudio,
+  transcribeImage
 };
