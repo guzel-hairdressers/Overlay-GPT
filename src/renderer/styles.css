@@ -833,17 +833,17 @@ html, body {
 
 .autocomplete-popup {
   position: absolute;
-  bottom: calc(100% - 4px);
+  top: 44px;
   left: 14px;
   right: 14px;
-  background: rgba(18, 18, 22, 0.95);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
+  background: rgba(18, 18, 22, 0.96);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
   border: 1px solid var(--accent-border-strong);
   border-radius: 10px;
-  box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.05);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.08);
   overflow: hidden;
-  z-index: 100;
+  z-index: 9999;
   display: none;
 }
 
@@ -921,7 +921,8 @@ html, body {
     opacity var(--transition-speed) ease,
     max-height var(--transition-speed) cubic-bezier(0.4, 0, 0.2, 1),
     padding var(--transition-speed) ease;
-  overflow: hidden;
+  overflow: visible;
+  z-index: 500;
 }
 
 .input-wrapper {
