@@ -12,7 +12,14 @@ const DEFAULT_CONFIG = {
     groq:       { apiKey: '', model: 'qwen/qwen3.6-27b' },
     openrouter: { apiKey: '', model: 'google/gemma-4-26b-a4b-it:free' }
   },
-  customProviders: {},
+  customProviders: {
+    gemma: {
+      name: 'Local Gemma 4 E4B',
+      endpoint: 'http://localhost:9379/v1',
+      apiKey: 'local',
+      model: 'gemma-4-e4b-it'
+    }
+  },
   activeProvider: 'groq',
   muted: false,
   disabled: false,
