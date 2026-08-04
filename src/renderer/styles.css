@@ -833,15 +833,15 @@ html, body {
 
 .autocomplete-popup {
   position: absolute;
-  top: 44px;
-  left: 14px;
-  right: 14px;
+  bottom: calc(100% + 6px);
+  left: 10px;
+  right: 10px;
   background: rgba(18, 18, 22, 0.96);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   border: 1px solid var(--accent-border-strong);
   border-radius: 10px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.08);
+  box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.08);
   overflow: hidden;
   z-index: 9999;
   display: none;
