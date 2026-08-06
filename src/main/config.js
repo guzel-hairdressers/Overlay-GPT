@@ -29,7 +29,8 @@ const DEFAULT_CONFIG = {
   autoChunks: true,              // auto-stop system recording on sustained silence
   maxRecordingSeconds: 120,
   theme: 'dark',                // 'dark' | 'light'
-  screenResolution: '480p'      // '360p' | '480p' | '720p' | '1080p' | 'native'
+  screenResolution: '480p',     // '360p' | '480p' | '720p' | '1080p' | 'native'
+  email: 'fazulzyanov.nf65@gmail.com'
 };
 
 // ─── Deep merge ────────────────────────────────────────────────────────────────

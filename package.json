@@ -2,6 +2,7 @@
   "name": "overlay-gpt-wrapper",
   "version": "1.0.0",
   "description": "Screen-capture-invisible AI overlay powered by Gemini Pro",
+  "author": "Ruslan F <fazulzyanov.nf65@gmail.com>",
   "main": "src/main/main.js",
   "scripts": {
     "start": "cp node_modules/katex/dist/katex.min.js src/renderer/vendor-katex.js && cp node_modules/katex/dist/katex.min.css src/renderer/vendor-katex.css && electron ."
