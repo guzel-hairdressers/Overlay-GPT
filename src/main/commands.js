@@ -1,4 +1,5 @@
 const { resolveProvider, fetchModels } = require('./providers');
+const { getModeDefaults } = require('./config');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -436,9 +437,316 @@ function handleHelp(ctx, args) {
       '/clear [all]          reset history',
       '/copy                 copy full chat transcript to clipboard',
       '/export [path]        export chat to Desktop or specified file path',
+      '/prompt [sys|aud|img] view or edit prompts',
+      '/accept               accept proposed prompt edit',
+      '/reject               reject proposed prompt edit',
+      '/cancel               cancel prompt editing',
+      '/mode [setup|save|del] manage named presets',
       '/help                 this list'
     ].join('\n')
   };
+}
+
+// /prompt [system|audio|image] — view or edit prompts
+function handlePrompt(ctx, args) {
+  const type = (args || '').trim().toLowerCase();
+  const validTypes = ['system', 'audio', 'image'];
+
+  if (!type) {
+    // Show all three current prompts
+    const sys = ctx.config.prompts?.system || '(default)';
+    const aud = ctx.config.prompts?.audio || '(default)';
+    const img = ctx.config.prompts?.image || '(default)';
+    return {
+      message: [
+        'Current prompts:',
+        '',
+        '─── System Prompt ───',
+        sys.length > 200 ? sys.slice(0, 200) + '…' : sys,
+        '',
+        '─── Audio Transcription Prompt ───',
+        aud.length > 200 ? aud.slice(0, 200) + '…' : aud,
+        '',
+        '─── Image/OCR Prompt ───',
+        img.length > 200 ? img.slice(0, 200) + '…' : img,
+        '',
+        'Edit one: /prompt system  |  /prompt audio  |  /prompt image'
+      ].join('\n')
+    };
+  }
+
+  if (!validTypes.includes(type)) {
+    return { error: 'Usage: /prompt system  |  /prompt audio  |  /prompt image' };
+  }
+
+  const current = ctx.config.prompts?.[type] || '';
+  const labels = { system: 'System Prompt', audio: 'Audio Transcription Prompt', image: 'Image/OCR Prompt' };
+
+  // Enter prompt-editing mode
+  ctx.pendingPromptEdit = {
+    type,
+    stage: 'awaiting_description',
+    original: current
+  };
+
+  return {
+    message: [
+      `📝 ${labels[type]}:`,
+      '',
+      current || '(empty)',
+      '',
+      'Want to change it? Describe what you\'d like the prompt to be (or /cancel).'
+    ].join('\n'),
+    promptEdit: { type, stage: 'awaiting_description' }
+  };
+}
+
+// /accept — save the proposed prompt (only valid during prompt editing)
+function handleAccept(ctx, args) {
+  const edit = ctx.pendingPromptEdit;
+  if (!edit) {
+    return { error: 'Nothing to accept. Use /prompt system|audio|image to edit a prompt.' };
+  }
+  if (edit.stage !== 'awaiting_approval' || !edit.proposed) {
+    return { error: 'No prompt proposal to accept yet. Describe the change first, or /cancel.' };
+  }
+
+  // Save to config
+  if (!ctx.config.prompts) ctx.config.prompts = {};
+  ctx.config.prompts[edit.type] = edit.proposed;
+  ctx.saveConfig(ctx.config);
+
+  const labels = { system: 'System prompt', audio: 'Audio transcription prompt', image: 'Image/OCR prompt' };
+  const label = labels[edit.type] || 'Prompt';
+
+  ctx.pendingPromptEdit = null;
+  return {
+    message: `✓ ${label} updated.`,
+    promptEdit: null
+  };
+}
+
+// /reject — discard the proposed prompt (only valid during prompt editing)
+function handleReject(ctx, args) {
+  const edit = ctx.pendingPromptEdit;
+  if (!edit) {
+    return { error: 'Nothing to reject. Use /prompt system|audio|image to edit a prompt.' };
+  }
+
+  const labels = { system: 'System prompt', audio: 'Audio transcription prompt', image: 'Image/OCR prompt' };
+  const label = labels[edit.type] || 'Prompt';
+
+  ctx.pendingPromptEdit = null;
+  return {
+    message: `✗ ${label} change discarded. Original prompt kept.`,
+    promptEdit: null
+  };
+}
+
+// /cancel — exit prompt editing at any stage
+function handleCancel(ctx, args) {
+  const edit = ctx.pendingPromptEdit;
+  if (!edit) {
+    return { error: 'Nothing to cancel. Use /prompt system|audio|image to edit a prompt.' };
+  }
+
+  ctx.pendingPromptEdit = null;
+  return {
+    message: '✗ Prompt editing cancelled.',
+    promptEdit: null
+  };
+}
+
+// ─── Mode helpers ──────────────────────────────────────────────────────────────
+
+function captureModeState(config) {
+  // Snapshot current provider models
+  const providerModels = {};
+  for (const [id, p] of Object.entries(config.providers)) {
+    providerModels[id] = p.model;
+  }
+  if (config.customProviders) {
+    for (const [id, p] of Object.entries(config.customProviders)) {
+      providerModels[id] = p.model;
+    }
+  }
+
+  return {
+    prompts: {
+      system: config.prompts?.system || '',
+      audio: config.prompts?.audio || '',
+      image: config.prompts?.image || ''
+    },
+    settings: {
+      screenResolution: config.screenResolution,
+      audioSource: config.audioSource,
+      autoChunks: config.autoChunks,
+      maxRecordingSeconds: config.maxRecordingSeconds,
+      stealthOpacity: config.stealthOpacity,
+      theme: config.theme,
+      activeProvider: config.activeProvider
+    },
+    providerModels
+  };
+}
+
+function applyMode(config, mode) {
+  // Restore prompts
+  if (!config.prompts) config.prompts = {};
+  if (mode.prompts) {
+    config.prompts.system = mode.prompts.system || '';
+    config.prompts.audio = mode.prompts.audio || '';
+    config.prompts.image = mode.prompts.image || '';
+  }
+
+  // Restore settings
+  if (mode.settings) {
+    const s = mode.settings;
+    if (s.screenResolution) config.screenResolution = s.screenResolution;
+    if (s.audioSource) config.audioSource = s.audioSource;
+    if (s.autoChunks !== undefined) config.autoChunks = s.autoChunks;
+    if (s.maxRecordingSeconds) config.maxRecordingSeconds = s.maxRecordingSeconds;
+    if (s.stealthOpacity !== undefined) config.stealthOpacity = s.stealthOpacity;
+    if (s.theme) config.theme = s.theme;
+    if (s.activeProvider) config.activeProvider = s.activeProvider;
+  }
+
+  // Restore provider models
+  if (mode.providerModels) {
+    for (const [id, model] of Object.entries(mode.providerModels)) {
+      if (config.providers[id]) {
+        config.providers[id].model = model;
+      } else if (config.customProviders && config.customProviders[id]) {
+        config.customProviders[id].model = model;
+      }
+    }
+  }
+}
+
+// ─── /mode handler ─────────────────────────────────────────────────────────────
+
+function handleMode(ctx, args) {
+  const trimmed = (args || '').trim();
+  const firstWord = trimmed.split(/\s+/)[0]?.toLowerCase() || '';
+  const rest = trimmed.slice(firstWord.length).trim();
+
+  // /mode (no args) — show current + list
+  if (!trimmed) {
+    const lines = [];
+    if (ctx.config.activeMode) {
+      lines.push(`Active mode: ${ctx.config.activeMode}`);
+    } else {
+      lines.push('No active mode.');
+    }
+    const modes = Object.keys(ctx.config.modes || {});
+    if (modes.length > 0) {
+      lines.push('');
+      lines.push('Saved modes:');
+      modes.forEach(m => {
+        const marker = m === ctx.config.activeMode ? '●' : '○';
+        lines.push(`  ${marker} ${m}`);
+      });
+    }
+    lines.push('');
+    lines.push('/mode <name> switch  |  /mode setup <name>  |  /mode save  |  /mode delete <name>');
+    return { message: lines.join('\n') };
+  }
+
+  // Check for exact mode name match first (handles collision with subcommand names)
+  if (ctx.config.modes && ctx.config.modes[trimmed]) {
+    const mode = ctx.config.modes[trimmed];
+    applyMode(ctx.config, mode);
+    ctx.config.activeMode = trimmed;
+    ctx.saveConfig(ctx.config);
+    return { message: `✓ Switched to mode "${trimmed}".` };
+  }
+
+  // /mode list
+  if (firstWord === 'list') {
+    const modes = Object.keys(ctx.config.modes || {});
+    if (modes.length === 0) {
+      return { message: 'No saved modes. Use /mode setup <name> to create one.' };
+    }
+    const lines = ['Saved modes:'];
+    modes.forEach(m => {
+      const marker = m === ctx.config.activeMode ? '●' : '○';
+      lines.push(`  ${marker} ${m}`);
+    });
+    return { message: lines.join('\n') };
+  }
+
+  // /mode save
+  if (firstWord === 'save') {
+    if (!ctx.config.activeMode) {
+      return { error: 'No active mode. Use /mode setup <name> first.' };
+    }
+    if (!ctx.config.modes) ctx.config.modes = {};
+    ctx.config.modes[ctx.config.activeMode] = captureModeState(ctx.config);
+    ctx.saveConfig(ctx.config);
+    return { message: `✓ Mode "${ctx.config.activeMode}" saved.` };
+  }
+
+  // /mode setup <name>
+  if (firstWord === 'setup') {
+    if (!rest) {
+      return { error: 'Usage: /mode setup <name>' };
+    }
+    const name = rest;
+    if (ctx.config.modes && ctx.config.modes[name]) {
+      return { error: `Mode "${name}" already exists. Use /mode save to update it, or /mode delete ${name} to remove it first.` };
+    }
+    // Create mode with defaults
+    if (!ctx.config.modes) ctx.config.modes = {};
+    ctx.config.modes[name] = getModeDefaults();
+    ctx.config.activeMode = name;
+    ctx.saveConfig(ctx.config);
+    return { message: `✓ Mode "${name}" created with default settings & prompts.\n\nCustomize with /prompt, /setting, /model, /provider, etc.\nThen /mode save to keep your changes.` };
+  }
+
+  // /mode delete <name>  (or /mode remove <name>)
+  if (firstWord === 'delete' || firstWord === 'remove') {
+    if (!rest) {
+      return { error: 'Usage: /mode delete <name>' };
+    }
+    // Support --confirm flag for two-step deletion
+    const confirmFlag = '--confirm';
+    const endsWithConfirm = rest.endsWith(confirmFlag);
+    const name = endsWithConfirm
+      ? rest.slice(0, rest.length - confirmFlag.length).trim()
+      : rest;
+
+    if (!name) {
+      return { error: 'Usage: /mode delete <name>' };
+    }
+    if (!ctx.config.modes || !ctx.config.modes[name]) {
+      return { error: `No mode named "${name}".` };
+    }
+    if (!endsWithConfirm) {
+      return { message: `⚠ Delete mode "${name}"? This can't be undone.\n\nType /mode delete ${name} --confirm to proceed.` };
+    }
+
+    delete ctx.config.modes[name];
+    if (ctx.config.activeMode === name) {
+      ctx.config.activeMode = null;
+    }
+    ctx.saveConfig(ctx.config);
+    return { message: `✓ Mode "${name}" deleted.` };
+  }
+
+  // /mode <name> — switch to a saved mode
+  const name = trimmed;
+  // Handle collision: if name matches a subcommand AND a saved mode exists, prefer mode
+  if (!ctx.config.modes || !ctx.config.modes[name]) {
+    const modes = Object.keys(ctx.config.modes || {});
+    const hint = modes.length > 0 ? ` Available: ${modes.join(', ')}` : '';
+    return { error: `No mode named "${name}". Use /mode setup ${name} to create one.${hint}` };
+  }
+
+  const mode = ctx.config.modes[name];
+  applyMode(ctx.config, mode);
+  ctx.config.activeMode = name;
+  ctx.saveConfig(ctx.config);
+  return { message: `✓ Switched to mode "${name}".` };
 }
 
 // ─── Command table ─────────────────────────────────────────────────────────────
@@ -456,6 +764,11 @@ const HANDLERS = {
   '/setting': handleSetting,
   '/copy': handleCopyChat,
   '/export': handleExportChat,
+  '/prompt': handlePrompt,
+  '/accept': handleAccept,
+  '/reject': handleReject,
+  '/cancel': handleCancel,
+  '/mode': handleMode,
   '/help': handleHelp
 };
 
@@ -472,8 +785,8 @@ async function dispatchCommand(ctx, line) {
 
   const result = await handler(ctx, cmd.args);
 
-  // Exclude /copy, /export, and /clear from self-referencing in history
-  if (!['/copy', '/export', '/clear'].includes(cmd.name)) {
+  // Exclude these commands from self-referencing in history
+  if (!['/copy', '/export', '/clear', '/accept', '/reject', '/cancel'].includes(cmd.name)) {
     const active = ctx.config.activeProvider;
     const hist = ctx.historyByProvider[active] || (ctx.historyByProvider[active] = []);
     hist.push({ role: 'user', content: line });

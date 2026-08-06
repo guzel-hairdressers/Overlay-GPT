@@ -1,7 +1,18 @@
 // ─── Provider Registry ────────────────────────────────────────────────────────
 
-const SYSTEM_PROMPT = `You are a real-time Zoom meeting assistant and screen observer.
-Important Context: The incoming prompts may contain transcribed text from audio speech-to-text or screen OCR/vision transcriptions. Transcribed text may occasionally contain minor phonetic or OCR formatting artifacts. Please deduce the user's intended prompt, make sense of the transcribed context, and solve any visible code, errors, exercises, questions, or problems directly. Provide concise, clear, and actionable answers.`;
+// ─── Prompt getters (from config, with defaults) ──────────────────────────────
+
+function getSystemPrompt(config) {
+  return config?.prompts?.system || 'You are a real-time assistant and screen observer. Provide concise, clear, and actionable answers.';
+}
+
+function getAudioPrompt(config) {
+  return config?.prompts?.audio || 'Transcribe this audio recording word-for-word. Return ONLY the transcript, no other text.';
+}
+
+function getImagePrompt(config) {
+  return config?.prompts?.image || 'You are a verbatim OCR and screen reader. Transcribe ALL visible text, code, numbers, UI labels, buttons, headers, error messages, and visual structure in this screenshot comprehensively and verbatim. Preserve code indentation, symbols, line numbers, and full questions exactly as shown on screen.';
+}
 
 const BUILTIN = {
   deepseek: {
@@ -153,7 +164,7 @@ function normalizeAnthropicHistory(history) {
 
 // ─── Gemini ───────────────────────────────────────────────────────────────────
 
-async function callGemini(provider, history, turn) {
+async function callGemini(provider, history, turn, config) {
   const contents = [];
 
   // Prior turns (text-only)
@@ -179,7 +190,7 @@ async function callGemini(provider, history, turn) {
 
   const body = JSON.stringify({
     contents,
-    systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+    systemInstruction: { parts: [{ text: getSystemPrompt(config) }] },
     generationConfig: { temperature: 0.7, maxOutputTokens: 4096 }
   });
 
@@ -200,14 +211,14 @@ async function callGemini(provider, history, turn) {
 
 // ─── OpenAI / DeepSeek / Custom (chat completions) ────────────────────────────
 
-async function callChatCompletions(provider, history, turn) {
+async function callChatCompletions(provider, history, turn, config) {
   const endpoint = provider.endpoint || 'https://api.openai.com/v1';
   const url = endpoint.endsWith('/chat/completions')
     ? endpoint
     : endpoint.replace(/\/$/, '') + '/chat/completions';
 
   const messages = [
-    { role: 'system', content: SYSTEM_PROMPT }
+    { role: 'system', content: getSystemPrompt(config) }
   ];
 
   // Prior turns (text-only)
@@ -283,7 +294,7 @@ async function callChatCompletions(provider, history, turn) {
 
 // ─── Anthropic (Messages) ─────────────────────────────────────────────────────
 
-async function callAnthropic(provider, history, turn) {
+async function callAnthropic(provider, history, turn, config) {
   const url = 'https://api.anthropic.com/v1/messages';
 
   const anthropicHistory = normalizeAnthropicHistory(history);
@@ -308,6 +319,7 @@ async function callAnthropic(provider, history, turn) {
   const body = JSON.stringify({
     model: provider.model,
     max_tokens: 4096,
+    system: getSystemPrompt(config),
     messages
     // No temperature/top_p/top_k — rejected on Sonnet 5 / Opus 5
   });
@@ -350,11 +362,11 @@ async function callProvider(config, history, question, options = {}) {
   let result;
   try {
     if (provider.kind === 'gemini') {
-      result = await callGemini(provider, history, turn);
+      result = await callGemini(provider, history, turn, config);
     } else if (provider.kind === 'anthropic') {
-      result = await callAnthropic(provider, history, turn);
+      result = await callAnthropic(provider, history, turn, config);
     } else {
-      result = await callChatCompletions(provider, history, turn);
+      result = await callChatCompletions(provider, history, turn, config);
     }
   } catch (err) {
     return { error: `Network error (${provider.name}): ${err.message}` };
@@ -430,7 +442,7 @@ async function transcribeAudio(config, audioBase64, audioMimeType) {
     contents: [{
       role: 'user',
       parts: [
-        { text: 'Transcribe this audio recording word-for-word. Return ONLY the transcript, no other text.' },
+        { text: getAudioPrompt(config) },
         { inlineData: { mimeType: audioMimeType || 'audio/webm', data: audioBase64 } }
       ]
     }],
@@ -457,7 +469,7 @@ async function transcribeAudio(config, audioBase64, audioMimeType) {
 
 // ─── Image / Screenshot transcription bridge (OpenRouter Qwen-VL / Gemini / Groq) ──
 
-async function transcribeImageWithOpenRouter(provider, imageBase64) {
+async function transcribeImageWithOpenRouter(provider, imageBase64, config) {
   const models = [
     'google/gemma-4-26b-a4b-it:free',
     'openrouter/free'
@@ -476,7 +488,7 @@ async function transcribeImageWithOpenRouter(provider, imageBase64) {
           messages: [{
             role: 'user',
             content: [
-              { type: 'text', text: 'You are a verbatim OCR and screen reader. Transcribe ALL visible text, code, numbers, UI labels, buttons, headers, error messages, and visual structure in this screenshot comprehensively and verbatim. Preserve code indentation, symbols, line numbers, and full questions exactly as shown on screen.' },
+              { type: 'text', text: getImagePrompt(config) },
               { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${imageBase64}`, detail: 'low' } }
             ]
           }],
@@ -496,7 +508,7 @@ async function transcribeImageWithOpenRouter(provider, imageBase64) {
   return null;
 }
 
-async function transcribeImageWithGemini(geminiProvider, imageBase64) {
+async function transcribeImageWithGemini(geminiProvider, imageBase64, config) {
   const models = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-2.0-flash'];
   for (const model of models) {
     try {
@@ -508,7 +520,7 @@ async function transcribeImageWithGemini(geminiProvider, imageBase64) {
           contents: [{
             role: 'user',
             parts: [
-              { text: 'You are a verbatim OCR and screen reader. Transcribe ALL visible text, code, numbers, UI labels, buttons, headers, error messages, and visual structure in this screenshot comprehensively and verbatim. Preserve code indentation, symbols, line numbers, and full questions exactly as shown on screen.' },
+              { text: getImagePrompt(config) },
               { inlineData: { mimeType: 'image/jpeg', data: imageBase64 } }
             ]
           }],
@@ -523,7 +535,7 @@ async function transcribeImageWithGemini(geminiProvider, imageBase64) {
   return null;
 }
 
-async function transcribeImageWithGroq(groqProvider, imageBase64) {
+async function transcribeImageWithGroq(groqProvider, imageBase64, config) {
   const model = groqProvider.model || 'qwen/qwen3.6-27b';
 
   try {
@@ -538,7 +550,7 @@ async function transcribeImageWithGroq(groqProvider, imageBase64) {
         messages: [{
           role: 'user',
           content: [
-            { type: 'text', text: 'You are a verbatim OCR and screen reader. Transcribe ALL visible text, code, numbers, UI labels, buttons, headers, error messages, and visual structure in this screenshot comprehensively and verbatim. Preserve code indentation, symbols, line numbers, and full questions exactly as shown on screen.' },
+            { type: 'text', text: getImagePrompt(config) },
             { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${imageBase64}`, detail: 'low' } }
           ]
         }],
@@ -578,7 +590,7 @@ async function transcribeImage(config, imageBase64) {
   // 1. Groq Qwen (qwen/qwen3.6-27b) FIRST — fast ultra-low-latency LPU transcription
   const groqProvider = resolveProvider(config, 'groq');
   if (groqProvider && groqProvider.apiKey) {
-    const res = await transcribeImageWithGroq(groqProvider, imageBase64);
+    const res = await transcribeImageWithGroq(groqProvider, imageBase64, config);
     if (res && res.transcript) return res;
     if (res && res.error) console.warn('Groq transcription failed:', res.error);
   }
@@ -586,12 +598,60 @@ async function transcribeImage(config, imageBase64) {
   // 2. OpenRouter (google/gemma-4-26b-a4b-it:free) SECOND (fallback)
   const openrouterProvider = resolveProvider(config, 'openrouter');
   if (openrouterProvider && openrouterProvider.apiKey) {
-    const res = await transcribeImageWithOpenRouter(openrouterProvider, imageBase64);
+    const res = await transcribeImageWithOpenRouter(openrouterProvider, imageBase64, config);
     if (res && res.transcript) return res;
     if (res && res.error) console.warn('OpenRouter transcription failed:', res.error);
   }
 
   return { error: '⚠️ Vision transcription failed. Please set a Groq key (/key groq <key>) or OpenRouter key (/key openrouter <key>).' };
+}
+
+// ─── Prompt generation (LLM rewrites a prompt based on user description) ─────
+
+async function generatePromptText(config, promptType, currentPrompt, userDescription) {
+  const provider = resolveProvider(config);
+  if (!provider || !provider.apiKey) {
+    return { error: `No active provider with an API key. Set one with /key.` };
+  }
+
+  const labels = { system: 'system prompt', audio: 'audio transcription prompt', image: 'image/OCR transcription prompt' };
+  const label = labels[promptType] || 'prompt';
+
+  const metaPrompt = `You are a prompt engineer. Rewrite the following ${label} based on the user's request.
+
+CURRENT ${label.toUpperCase()}:
+"""
+${currentPrompt}
+"""
+
+USER'S REQUEST:
+"""
+${userDescription}
+"""
+
+Rewrite the ${label} based on the user's request. Preserve important context and intent from the original unless the user explicitly asks to remove something. Return ONLY the rewritten prompt text — no explanation, no markdown fences, no preamble.`;
+
+  // Build a minimal turn without touching the main conversation history
+  const turn = { text: metaPrompt, image: null, audio: null };
+
+  let result;
+  try {
+    if (provider.kind === 'gemini') {
+      result = await callGemini(provider, [], turn, config);
+    } else if (provider.kind === 'anthropic') {
+      result = await callAnthropic(provider, [], turn, config);
+    } else {
+      result = await callChatCompletions(provider, [], turn, config);
+    }
+  } catch (err) {
+    return { error: `Prompt generation failed: ${err.message}` };
+  }
+
+  if (result.error) return result;
+  // Strip any markdown fences the model might have wrapped the output in
+  let text = (result.answer || '').trim();
+  text = text.replace(/^```[\w]*\n?/i, '').replace(/\n?```$/i, '');
+  return { prompt: text.trim() };
 }
 
 // ─── Exports ──────────────────────────────────────────────────────────────────
@@ -605,5 +665,9 @@ module.exports = {
   supportsAudio,
   supportsVision,
   transcribeAudio,
-  transcribeImage
+  transcribeImage,
+  generatePromptText,
+  getSystemPrompt,
+  getAudioPrompt,
+  getImagePrompt
 };

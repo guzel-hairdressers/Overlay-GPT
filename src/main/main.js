@@ -4,7 +4,7 @@ const path = require('path');
 // ─── Config ──────────────────────────────────────────────────────────────────
 
 const { loadConfig, saveConfig } = require('./config');
-const { callProvider, resolveProvider, supportsAudio, supportsVision, transcribeImage } = require('./providers');
+const { callProvider, resolveProvider, supportsAudio, supportsVision, transcribeImage, generatePromptText } = require('./providers');
 const { dispatchCommand, parseCommand } = require('./commands');
 
 const CONFIG_PATH = path.join(app.getPath('userData'), 'config.json');
@@ -16,6 +16,7 @@ let config = null;
 let isVisible = true;
 let isInteractive = false;
 let historyByProvider = {};   // { providerId: [{role, content}, ...] }
+let pendingPromptEdit = null; // { type, stage, original, proposed } | null
 
 // ─── Broadcast helpers ───────────────────────────────────────────────────────
 
@@ -55,7 +56,8 @@ function buildConfigForRenderer(cfg) {
     audioSource: cfg.audioSource,
     autoChunks: cfg.autoChunks !== false,
     maxRecordingSeconds: cfg.maxRecordingSeconds,
-    theme: cfg.theme || 'dark'
+    theme: cfg.theme || 'dark',
+    activeMode: cfg.activeMode || null
   };
 }
 
@@ -324,10 +326,14 @@ function setupIPC() {
       historyByProvider,
       broadcastMute,
       broadcastDisable,
-      broadcastConfig
+      broadcastConfig,
+      pendingPromptEdit
     };
 
+    // Sync pendingPromptEdit back from ctx after command dispatch
     const cmdResult = await dispatchCommand(ctx, question);
+    pendingPromptEdit = ctx.pendingPromptEdit;
+
     if (cmdResult) {
       if (cmdResult.copyToClipboard) {
         try { clipboard.writeText(cmdResult.copyToClipboard); } catch (e) {}
@@ -337,19 +343,94 @@ function setupIPC() {
       return cmdResult;
     }
 
+    // ── Prompt editing: intercept non-command input when in edit mode ──
+    if (pendingPromptEdit && question && !question.startsWith('/')) {
+      const edit = pendingPromptEdit;
+
+      if (edit.stage === 'awaiting_description') {
+        // User described what they want — ask LLM to generate the prompt
+        const current = config.prompts?.[edit.type] || '';
+        const genResult = await generatePromptText(config, edit.type, current, question);
+
+        if (genResult.error) {
+          pendingPromptEdit = null;
+          return { type: 'error', error: genResult.error };
+        }
+
+        edit.proposed = genResult.prompt;
+        edit.stage = 'awaiting_approval';
+        edit.feedback = question;
+
+        return {
+          type: 'prompt-proposal',
+          promptType: edit.type,
+          proposed: genResult.prompt,
+          message: [
+            `✨ Proposed ${edit.type} prompt:`,
+            '',
+            genResult.prompt,
+            '',
+            '/accept  ·  /reject  ·  or describe changes'
+          ].join('\n')
+        };
+      }
+
+      if (edit.stage === 'awaiting_approval') {
+        // User wants modifications — regenerate with new feedback
+        const current = config.prompts?.[edit.type] || '';
+        const combinedFeedback = `${edit.feedback}\n\nAdditional changes: ${question}`;
+        const genResult = await generatePromptText(config, edit.type, current, combinedFeedback);
+
+        if (genResult.error) {
+          pendingPromptEdit = null;
+          return { type: 'error', error: genResult.error };
+        }
+
+        edit.proposed = genResult.prompt;
+        edit.feedback = combinedFeedback;
+
+        return {
+          type: 'prompt-proposal',
+          promptType: edit.type,
+          proposed: genResult.prompt,
+          message: [
+            `✨ Revised ${edit.type} prompt:`,
+            '',
+            genResult.prompt,
+            '',
+            '/accept  ·  /reject  ·  or describe changes'
+          ].join('\n')
+        };
+      }
+    }
+
     // ── LLM call ──
     if (!question && !imageBase64 && !audioBase64) {
       return { type: 'error', error: 'No input provided.' };
     }
 
-    // Audio transcription via mlx-whisper for providers without native audio
+    let warning = null;
     let finalQuestion = question;
     let finalAudioBase64 = audioBase64;
     let finalAudioMimeType = audioMimeType;
 
+    // Check for unsupported combinations before the call
+    const activeProvider = resolveProvider(config);
+
+    if (audioBase64 && activeProvider && !supportsAudio(activeProvider)) {
+      const name = activeProvider.name;
+      warning = `${name} doesn't support audio input natively. Audio will be transcribed to text instead. For native audio, switch to Gemini or OpenAI — get a free Gemini key at https://aistudio.google.com`;
+    }
+
+    if (imageBase64 && activeProvider && !supportsVision(activeProvider)) {
+      const name = activeProvider.name;
+      const imgWarning = `${name} doesn't support image input natively. Screenshot will be OCR'd as a fallback. For native vision, switch to Gemini or OpenAI.`;
+      warning = warning ? warning + '\n\n' + imgWarning : imgWarning;
+    }
+
+    // Audio transcription via mlx-whisper for providers without native audio
     if (audioBase64) {
-      const provider = resolveProvider(config);
-      if (provider && !supportsAudio(provider)) {
+      if (activeProvider && !supportsAudio(activeProvider)) {
         const transcript = await transcribeWhisper(audioBase64);
         if (transcript) {
           finalQuestion = question
@@ -382,7 +463,8 @@ function setupIPC() {
         suppressed: true,
         question: question || (imageBase64 ? '[screen]' : '[audio]'),
         provider: result.provider,
-        model: result.model
+        model: result.model,
+        warning
       };
     }
 
@@ -391,7 +473,8 @@ function setupIPC() {
       answer: result.answer,
       question: question || (imageBase64 ? '[screen]' : '[audio]'),
       provider: result.provider,
-      model: result.model
+      model: result.model,
+      warning
     };
   });
 
@@ -637,21 +720,6 @@ function registerShortcuts() {
     mainWindow.setIgnoreMouseEvents(false);
     mainWindow.focus();
     mainWindow.webContents.send('shortcut-screenshot');
-  });
-
-  // Continuous Video Screen Stream Mode
-  globalShortcut.register('CommandOrControl+Shift+V', () => {
-    if (!mainWindow) return;
-    if (config.disabled) return;
-    if (!isVisible) {
-      isVisible = true;
-      mainWindow.show();
-      mainWindow.webContents.send('visibility-change', true);
-    }
-    isInteractive = true;
-    mainWindow.setIgnoreMouseEvents(false);
-    mainWindow.focus();
-    mainWindow.webContents.send('toggle-video');
   });
 
   // Fullscreen toggle

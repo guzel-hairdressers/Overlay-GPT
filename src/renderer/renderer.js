@@ -11,7 +11,7 @@ const screenBadge = document.getElementById('screenBadge');
 const audioBadge = document.getElementById('audioBadge');
 const muteBadge = document.getElementById('muteBadge');
 const disableBadge = document.getElementById('disableBadge');
-const videoBadge = document.getElementById('videoBadge');
+
 const vadMeterBadge = document.getElementById('vadMeterBadge');
 const vadMeterFill = document.getElementById('vadMeterFill');
 const vadNoiseFloorMarker = document.getElementById('vadNoiseFloorMarker');
@@ -76,9 +76,7 @@ let rawImageBases = [];
 let currentImageIndex = 0;
 let isProcessingImageQueue = false;
 
-// Video screen stream state
-let isVideoStreamActive = false;
-let videoStreamTimer = null;
+
 
 // ─── Init / Hydrate ──────────────────────────────────────────────────────────
 
@@ -110,7 +108,19 @@ async function hydrateUI() {
       answerContent.innerHTML = '';
       const p = document.createElement('p');
       p.className = 'placeholder-text';
-      p.innerHTML = 'No API key set.<br><br>Press <strong>Cmd+Shift+Space</strong> and type:<br><code>/key deepseek &lt;your-key&gt;</code><br><br>Also: <code>/key openai &lt;key&gt;</code>  <code>/key gemini &lt;key&gt;</code>';
+      p.innerHTML = [
+        '<strong>Welcome! No API keys configured.</strong>',
+        '',
+        'Get started:',
+        '<code>/key groq &lt;key&gt;</code>       → <a href="#">https://console.groq.com/keys</a>  (free tier)',
+        '<code>/key openai &lt;key&gt;</code>     → <a href="#">https://platform.openai.com/api-keys</a>',
+        '<code>/key gemini &lt;key&gt;</code>     → <a href="#">https://aistudio.google.com</a>  (free tier)',
+        '<code>/key deepseek &lt;key&gt;</code>   → <a href="#">https://platform.deepseek.com</a>',
+        '<code>/key anthropic &lt;key&gt;</code>  → <a href="#">https://console.anthropic.com</a>',
+        '',
+        'Then:  <code>/provider &lt;name&gt;</code>   to switch',
+        '       <code>/mode setup &lt;name&gt;</code> to save your setup',
+      ].join('<br>');
       answerContent.appendChild(p);
     }
   } catch (e) {
@@ -279,45 +289,7 @@ window.api.onToggleAudio(() => {
   }
 });
 
-window.api.onToggleVideo(() => {
-  if (disabled) return;
-  isVideoStreamActive = !isVideoStreamActive;
-  videoBadge.classList.toggle('visible', isVideoStreamActive);
 
-  if (isVideoStreamActive) {
-    statusText.textContent = 'live video';
-    startVideoSampling();
-  } else {
-    stopVideoSampling();
-    statusText.textContent = isActive ? 'active' : disabled ? 'disabled' : muted ? 'muted' : 'stealth';
-  }
-});
-
-function startVideoSampling() {
-  stopVideoSampling();
-  window.api.captureScreen().then(base64 => {
-    if (base64) {
-      pendingScreenshot = base64;
-      screenBadge.classList.add('visible');
-    }
-  });
-
-  videoStreamTimer = setInterval(async () => {
-    if (!isVideoStreamActive || disabled) return;
-    const base64 = await window.api.captureScreen();
-    if (base64) {
-      pendingScreenshot = base64;
-      screenBadge.classList.add('visible');
-    }
-  }, 2500);
-}
-
-function stopVideoSampling() {
-  if (videoStreamTimer) {
-    clearInterval(videoStreamTimer);
-    videoStreamTimer = null;
-  }
-}
 
 window.api.onMuteChange((m) => {
   muted = m;
@@ -366,6 +338,8 @@ const SLASH_COMMANDS = [
   { cmd: '/clear', args: '[all]', desc: 'clear conversation history' },
   { cmd: '/mute', args: '', desc: 'suppress response output' },
   { cmd: '/disable', args: '', desc: 'pause all input processing' },
+  { cmd: '/prompt', args: 'system|audio|image', desc: 'view or edit system, audio, or image prompts' },
+  { cmd: '/mode', args: 'setup|save|delete|<name>', desc: 'manage named presets of prompts & settings' },
   { cmd: '/help', args: '', desc: 'show command reference manual' }
 ];
 
@@ -453,7 +427,42 @@ function updateAutocomplete() {
     return;
   }
 
-  // Commands other than /setting with args — hide popup
+  // ── Stage 2: /prompt sub-options ──
+  if (cmdName === '/prompt') {
+    const query = afterCmd.trim().toLowerCase();
+    const PROMPT_TYPES = [
+      { cmd: 'system', args: '', desc: 'main system prompt for the AI assistant' },
+      { cmd: 'audio', args: '', desc: 'prompt used for audio transcription' },
+      { cmd: 'image', args: '', desc: 'prompt used for image/OCR transcription' }
+    ];
+    autocompleteMode = 'prompt-type';
+    autocompleteMatches = PROMPT_TYPES.filter(p => p.cmd.startsWith(query));
+    if (autocompleteMatches.length === 0) { hideAutocomplete(); return; }
+    if (autocompleteIndex >= autocompleteMatches.length) autocompleteIndex = 0;
+    renderAutocomplete();
+    showAutocomplete();
+    return;
+  }
+
+  // ── Stage 2: /mode sub-options ──
+  if (cmdName === '/mode') {
+    const query = afterCmd.trim().toLowerCase();
+    const MODE_SUBS = [
+      { cmd: 'setup', args: '<name>', desc: 'create new mode with default settings' },
+      { cmd: 'save', args: '', desc: 'save current settings to active mode' },
+      { cmd: 'delete', args: '<name>', desc: 'delete a saved mode' },
+      { cmd: 'list', args: '', desc: 'list all saved modes' }
+    ];
+    autocompleteMode = 'mode-sub';
+    autocompleteMatches = MODE_SUBS.filter(s => s.cmd.startsWith(query));
+    if (autocompleteMatches.length === 0) { hideAutocomplete(); return; }
+    if (autocompleteIndex >= autocompleteMatches.length) autocompleteIndex = 0;
+    renderAutocomplete();
+    showAutocomplete();
+    return;
+  }
+
+  // Commands other than /setting, /prompt, /mode with args — hide popup
   hideAutocomplete();
 }
 
@@ -495,6 +504,12 @@ function applyAutocomplete(item) {
   if (autocompleteMode === 'command') {
     // Complete command name: "/sett" + Tab → "/setting "
     questionInput.value = selected.cmd + ' ';
+  } else if (autocompleteMode === 'prompt-type') {
+    // Complete prompt type: "/prompt s" + Tab → "/prompt system "
+    questionInput.value = '/prompt ' + selected.cmd + ' ';
+  } else if (autocompleteMode === 'mode-sub') {
+    // Complete mode sub-command: "/mode set" + Tab → "/mode setup "
+    questionInput.value = '/mode ' + selected.cmd + (selected.args ? ' ' : '');
   } else if (autocompleteMode === 'setting-key') {
     // Complete setting key: "/setting au" + Tab → "/setting auto-chunks "
     questionInput.value = '/setting ' + selected.cmd + ' ';
@@ -551,15 +566,6 @@ questionInput.addEventListener('keydown', async (e) => {
       autocompleteIndex = (autocompleteIndex - 1 + autocompleteMatches.length) % autocompleteMatches.length;
       renderAutocomplete();
       return;
-    }
-    if (e.key === 'Enter' && !e.shiftKey) {
-      const val = questionInput.value.trim();
-      const currentMatch = autocompleteMatches[autocompleteIndex];
-      if (currentMatch && val !== currentMatch.cmd) {
-        e.preventDefault();
-        applyAutocomplete();
-        return;
-      }
     }
     if (e.key === 'Escape') {
       e.preventDefault();
@@ -1396,12 +1402,30 @@ async function submitQuestion(question) {
       cmdEl.textContent = result.message || result.error || '';
       answerContent.appendChild(cmdEl);
       await hydrateUI();
+    } else if (result.type === 'prompt-proposal') {
+      const proposalEl = document.createElement('div');
+      proposalEl.className = 'answer-text command-result';
+      proposalEl.textContent = result.message || '';
+      answerContent.appendChild(proposalEl);
+      await hydrateUI();
     } else if (result.type === 'llm' && result.suppressed) {
+      if (result.warning) {
+        const warnEl = document.createElement('div');
+        warnEl.className = 'answer-text muted-chip';
+        warnEl.textContent = '⚠️ ' + result.warning;
+        answerContent.appendChild(warnEl);
+      }
       const chipEl = document.createElement('div');
       chipEl.className = 'answer-text muted-chip';
       chipEl.textContent = '🔇 muted — response not shown (context kept)';
       answerContent.appendChild(chipEl);
     } else if (result.type === 'llm') {
+      if (result.warning) {
+        const warnEl = document.createElement('div');
+        warnEl.className = 'answer-text muted-chip';
+        warnEl.textContent = '⚠️ ' + result.warning;
+        answerContent.appendChild(warnEl);
+      }
       const answerEl = document.createElement('div');
       answerEl.className = 'answer-text';
       answerEl.appendChild(formatAnswer(result.answer));

@@ -365,19 +365,6 @@ html, body {
 
 .screen-badge svg { flex-shrink: 0; }
 
-.video-badge {
-  color: #a78bfa;
-  background: rgba(167, 139, 250, 0.12);
-  border: 1px solid rgba(167, 139, 250, 0.3);
-  animation: pulse-purple 2s ease-in-out infinite;
-}
-
-@keyframes pulse-purple {
-  0%, 100% { opacity: 0.8; }
-  50% { opacity: 1; }
-}
-
-.video-badge svg { flex-shrink: 0; }
 
 .audio-badge {
   color: var(--red);

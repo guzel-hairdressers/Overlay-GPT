@@ -60,9 +60,6 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('toggle-audio', () => callback());
   },
 
-  onToggleVideo: (callback) => {
-    ipcRenderer.on('toggle-video', () => callback());
-  },
 
   onMuteChange: (callback) => {
     ipcRenderer.on('mute-change', (_, muted) => callback(muted));

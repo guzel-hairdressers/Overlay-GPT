@@ -30,8 +30,37 @@ const DEFAULT_CONFIG = {
   maxRecordingSeconds: 120,
   theme: 'dark',                // 'dark' | 'light'
   screenResolution: '480p',     // '360p' | '480p' | '720p' | '1080p' | 'native'
-  email: 'fazulzyanov.nf65@gmail.com'
+  email: 'fazulzyanov.nf65@gmail.com',
+  modes: {},
+  activeMode: null,
+  prompts: {
+    system: 'You are a real-time Zoom meeting assistant and screen observer.\nImportant Context: The incoming prompts may contain transcribed text from audio speech-to-text or screen OCR/vision transcriptions. Transcribed text may occasionally contain minor phonetic or OCR formatting artifacts. Please deduce the user\'s intended prompt, make sense of the transcribed context, and solve any visible code, errors, exercises, questions, or problems directly. Provide concise, clear, and actionable answers.',
+    audio: 'Transcribe this audio recording word-for-word. Return ONLY the transcript, no other text.',
+    image: 'You are a verbatim OCR and screen reader. Transcribe ALL visible text, code, numbers, UI labels, buttons, headers, error messages, and visual structure in this screenshot comprehensively and verbatim. Preserve code indentation, symbols, line numbers, and full questions exactly as shown on screen.'
+  }
 };
+
+// ─── Mode defaults ─────────────────────────────────────────────────────────────
+
+function getModeDefaults() {
+  return {
+    prompts: {
+      system: DEFAULT_CONFIG.prompts.system,
+      audio: DEFAULT_CONFIG.prompts.audio,
+      image: DEFAULT_CONFIG.prompts.image
+    },
+    settings: {
+      screenResolution: DEFAULT_CONFIG.screenResolution,
+      audioSource: DEFAULT_CONFIG.audioSource,
+      autoChunks: DEFAULT_CONFIG.autoChunks,
+      maxRecordingSeconds: DEFAULT_CONFIG.maxRecordingSeconds,
+      stealthOpacity: DEFAULT_CONFIG.stealthOpacity,
+      theme: DEFAULT_CONFIG.theme,
+      activeProvider: DEFAULT_CONFIG.activeProvider
+    },
+    providerModels: {}
+  };
+}
 
 // ─── Deep merge ────────────────────────────────────────────────────────────────
 
@@ -100,4 +129,4 @@ function saveConfig(configPath, config) {
   }
 }
 
-module.exports = { DEFAULT_CONFIG, loadConfig, saveConfig, deepMerge };
+module.exports = { DEFAULT_CONFIG, loadConfig, saveConfig, deepMerge, getModeDefaults };
