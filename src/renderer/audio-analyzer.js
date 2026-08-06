@@ -20,7 +20,14 @@ class AudioNoiseAnalyzer {
     this.onVolumeChange = options.onVolumeChange || null;
 
     this.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    this.source = this.audioCtx.createMediaStreamSource(stream);
+    if (this.audioCtx.state === 'suspended') {
+      this.audioCtx.resume().catch(() => {});
+    }
+    if (this.audioCtx.createMediaStreamTrackSource && stream.getAudioTracks && stream.getAudioTracks().length > 0) {
+      this.source = this.audioCtx.createMediaStreamTrackSource(stream.getAudioTracks()[0]);
+    } else {
+      this.source = this.audioCtx.createMediaStreamSource(stream);
+    }
     this.analyser = this.audioCtx.createAnalyser();
     this.analyser.fftSize = 512;
     this.analyser.smoothingTimeConstant = 0.3;
@@ -62,6 +69,13 @@ class AudioNoiseAnalyzer {
     if (this.audioCtx && this.audioCtx.state !== 'closed') {
       try { this.audioCtx.close(); } catch (e) {}
     }
+  }
+
+  resetSpeechState() {
+    this.speechFrameCount = 0;
+    this.hasSpoken = false;
+    this.isSpeaking = false;
+    this.silenceStart = null;
   }
 
   loop = () => {
@@ -149,17 +163,15 @@ class AudioNoiseAnalyzer {
       }
     }
 
-    // Phase 3: Silence Countdown after Speech
+    // Phase 3: Silence Countdown after Speech (1.0s silence triggers chunk flush, continues listening)
     if (this.hasSpoken && !this.isSpeaking) {
       if (!this.silenceStart) {
         this.silenceStart = Date.now();
       } else {
         const elapsedSilence = Date.now() - this.silenceStart;
         if (elapsedSilence >= this.silenceMs) {
-          // Continuous silence threshold reached!
-          this.isAnalyzing = false;
+          this.resetSpeechState();
           if (this.onSilence) this.onSilence();
-          return;
         }
       }
     }

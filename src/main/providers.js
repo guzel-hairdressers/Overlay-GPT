@@ -360,7 +360,13 @@ async function callProvider(config, history, question, options = {}) {
     return { error: `Network error (${provider.name}): ${err.message}` };
   }
 
-  if (result.error) return result;
+  if (result.error) {
+    const userMsg = question || (turn.image ? '[screen capture]' : turn.audio ? '[audio recording]' : '[query]');
+    history.push({ role: 'user', content: userMsg });
+    history.push({ role: 'assistant', content: `[Error] ${result.error}` });
+    trimHistory(history);
+    return result;
+  }
 
   // Record in history
   if (question) {

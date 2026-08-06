@@ -19,8 +19,17 @@ contextBridge.exposeInMainWorld('api', {
   // ── Image vision transcription ──
   transcribeImage: (imageBase64) => ipcRenderer.invoke('transcribe-image', imageBase64),
 
-  // ── Native Clipboard ──
+  // ── Native ScreenCaptureKit System Audio ──
+  startSystemAudioCapture: () => ipcRenderer.invoke('start-system-audio-capture'),
+  stopSystemAudioCapture: () => ipcRenderer.invoke('stop-system-audio-capture'),
+  stopSystemAudioCaptureRaw: () => ipcRenderer.invoke('stop-system-audio-capture-raw'),
+  onSysAudioVolume: (callback) => {
+    ipcRenderer.on('sys-audio-volume', (event, db) => callback(db));
+  },
+
+  // ── Native Clipboard & History ──
   writeClipboard: (text) => ipcRenderer.invoke('write-clipboard', text),
+  logHistory: (userMsg, assistantMsg) => ipcRenderer.invoke('log-history', userMsg, assistantMsg),
 
   // ── Event listeners from main process ──
   onActivateInput: (callback) => {

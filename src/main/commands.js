@@ -212,13 +212,27 @@ function handleOpacity(ctx, args) {
 // /clear [all]
 function handleClear(ctx, args) {
   if (args.trim().toLowerCase() === 'all') {
-    Object.keys(ctx.historyByProvider).forEach(k => delete ctx.historyByProvider[k]);
+    ctx.historyByProvider = {};
     return { message: '✓ All conversation history cleared.' };
   }
+
   const active = ctx.config.activeProvider;
-  if (ctx.historyByProvider[active]) {
+  let clearedCount = 0;
+
+  if (ctx.historyByProvider[active] && ctx.historyByProvider[active].length > 0) {
+    clearedCount = ctx.historyByProvider[active].length;
     ctx.historyByProvider[active] = [];
-    return { message: `✓ ${active} conversation history cleared.` };
+  } else {
+    for (const key of Object.keys(ctx.historyByProvider || {})) {
+      if (ctx.historyByProvider[key] && ctx.historyByProvider[key].length > 0) {
+        clearedCount += ctx.historyByProvider[key].length;
+        ctx.historyByProvider[key] = [];
+      }
+    }
+  }
+
+  if (clearedCount > 0) {
+    return { message: `✓ Conversation history cleared (${clearedCount} messages removed).` };
   }
   return { message: 'No history to clear.' };
 }
@@ -321,6 +335,90 @@ function handleExportChat(ctx, args) {
   }
 }
 
+// /resolution [360p|480p|720p|1080p|native]
+function handleResolution(ctx, args) {
+  const target = (args || '').trim().toLowerCase();
+  const presets = ['360p', '480p', '720p', '1080p', 'native'];
+
+  if (!target) {
+    const current = ctx.config.screenResolution || '480p';
+    return { message: `Current screenshot resolution: ${current}. Options: ${presets.join(', ')} (or custom width e.g. /res 1280)` };
+  }
+
+  const num = parseInt(target, 10);
+  if (presets.includes(target) || (!isNaN(num) && num >= 200 && num <= 4000)) {
+    ctx.config.screenResolution = target;
+    ctx.saveConfig(ctx.config);
+    return { message: `✓ Screenshot capture resolution set to: ${target}` };
+  }
+
+  return { error: `Invalid resolution "${target}". Choose from: ${presets.join(', ')}` };
+}
+
+// /setting [key] [value]  — unified settings (resolution, audio, opacity, theme, auto-chunks)
+function handleSetting(ctx, args) {
+  const parts = args.split(/\s+/);
+  const key = (parts[0] || '').toLowerCase();
+  const value = parts.slice(1).join(' ');
+
+  if (!key) {
+    // Show all settings
+    const lines = [
+      'Current settings:',
+      `  resolution    ${ctx.config.screenResolution || '480p'}`,
+      `  audio         ${ctx.config.audioSource || 'mic'}`,
+      `  opacity       ${ctx.config.stealthOpacity || 0.15}`,
+      `  theme         ${ctx.config.theme || 'dark'}`,
+      `  auto-chunks   ${ctx.config.autoChunks !== false ? 'true' : 'false'}`,
+      `  max-recording ${ctx.config.maxRecordingSeconds || 120}s`,
+      '',
+      'Usage: /setting <key> <value>',
+    ];
+    return { message: lines.join('\n') };
+  }
+
+  if (key === 'resolution' || key === 'res') {
+    return handleResolution(ctx, value);
+  }
+  if (key === 'audio') {
+    return handleAudio(ctx, value);
+  }
+  if (key === 'opacity') {
+    return handleOpacity(ctx, value);
+  }
+  if (key === 'theme') {
+    return handleTheme(ctx, value);
+  }
+  if (key === 'auto-chunks' || key === 'autochunks') {
+    const v = value.toLowerCase();
+    if (v === 'true' || v === 'on' || v === '1') {
+      ctx.config.autoChunks = true;
+      ctx.saveConfig(ctx.config);
+      ctx.broadcastConfig(ctx.config);
+      return { message: '✓ Auto-chunks enabled — audio chunks on silence (all modes).' };
+    }
+    if (v === 'false' || v === 'off' || v === '0') {
+      ctx.config.autoChunks = false;
+      ctx.saveConfig(ctx.config);
+      ctx.broadcastConfig(ctx.config);
+      return { message: '✓ Auto-chunks disabled — continuous recording until manual stop.' };
+    }
+    return { error: 'Usage: /setting auto-chunks true|false' };
+  }
+  if (key === 'max-recording' || key === 'maxrecording') {
+    const v = parseInt(value, 10);
+    if (isNaN(v) || v < 10 || v > 600) {
+      return { error: 'Usage: /setting max-recording <10-600> (seconds). Example: /setting max-recording 180' };
+    }
+    ctx.config.maxRecordingSeconds = v;
+    ctx.saveConfig(ctx.config);
+    ctx.broadcastConfig(ctx.config);
+    return { message: `✓ Max recording duration set to ${v} seconds (${Math.floor(v/60)}m${v%60}s).` };
+  }
+
+  return { error: `Unknown setting "${key}". Available: resolution, audio, opacity, theme, auto-chunks, max-recording` };
+}
+
 // /help
 function handleHelp(ctx, args) {
   return {
@@ -333,10 +431,9 @@ function handleHelp(ctx, args) {
       '/models [p]           list available models',
       '/mute                 suppress responses',
       '/disable              pause all input',
-      '/theme light|dark     light or dark mode',
-      '/opacity <0.01-1>     stealth opacity',
+      '/audio mic|system|both|off  audio source',
+      '/setting [key] [val]  settings: resolution, audio, opacity, theme, auto-chunks',
       '/clear [all]          reset history',
-      '/audio mic|system|off audio source',
       '/copy                 copy full chat transcript to clipboard',
       '/export [path]        export chat to Desktop or specified file path',
       '/help                 this list'
@@ -354,10 +451,9 @@ const HANDLERS = {
   '/models': handleModels,
   '/mute': handleMute,
   '/disable': handleDisable,
-  '/theme': handleTheme,
-  '/opacity': handleOpacity,
   '/clear': handleClear,
   '/audio': handleAudio,
+  '/setting': handleSetting,
   '/copy': handleCopyChat,
   '/export': handleExportChat,
   '/help': handleHelp
@@ -375,6 +471,16 @@ async function dispatchCommand(ctx, line) {
   }
 
   const result = await handler(ctx, cmd.args);
+
+  // Exclude /copy, /export, and /clear from self-referencing in history
+  if (!['/copy', '/export', '/clear'].includes(cmd.name)) {
+    const active = ctx.config.activeProvider;
+    const hist = ctx.historyByProvider[active] || (ctx.historyByProvider[active] = []);
+    hist.push({ role: 'user', content: line });
+    if (result.message) hist.push({ role: 'assistant', content: result.message });
+    if (result.error) hist.push({ role: 'assistant', content: `[Error] ${result.error}` });
+  }
+
   return { type: 'command', command: cmd.name, ...result };
 }
 

@@ -53,6 +53,7 @@ function buildConfigForRenderer(cfg) {
     stealthOpacity: cfg.stealthOpacity,
     activeOpacity: cfg.activeOpacity,
     audioSource: cfg.audioSource,
+    autoChunks: cfg.autoChunks !== false,
     maxRecordingSeconds: cfg.maxRecordingSeconds,
     theme: cfg.theme || 'dark'
   };
@@ -126,24 +127,42 @@ function createWindow() {
 
 // ─── Screen Capture ──────────────────────────────────────────────────────────
 
+function getResolutionDimensions(resString) {
+  const normalized = (resString || '480p').toLowerCase().trim();
+  const presets = {
+    '360p':   { width: 640,  height: 360 },
+    '480p':   { width: 854,  height: 480 },
+    '720p':   { width: 1280, height: 720 },
+    '1080p':  { width: 1920, height: 1080 },
+    'native': { width: 3840, height: 2160 }
+  };
+  if (presets[normalized]) return presets[normalized];
+
+  const num = parseInt(normalized, 10);
+  if (!isNaN(num) && num >= 200 && num <= 4000) {
+    return { width: num, height: Math.round((num * 9) / 16) };
+  }
+  return presets['480p'];
+}
+
 async function captureScreen() {
   try {
+    const dims = getResolutionDimensions(config?.screenResolution);
     const sources = await desktopCapturer.getSources({
       types: ['screen'],
-      thumbnailSize: { width: 854, height: 480 }
+      thumbnailSize: { width: dims.width, height: dims.height }
     });
 
     if (sources.length > 0) {
       let image = sources[0].thumbnail;
       const size = image.getSize();
 
-      // Downsample to max 854px physical width (480p)
-      if (size.width > 854) {
-        image = image.resize({ width: 854, quality: 'good' });
+      if (dims.width < 3840 && size.width > dims.width) {
+        image = image.resize({ width: dims.width, quality: 'good' });
       }
 
       const jpegBuffer = image.toJPEG(40);
-      console.log(`[captureScreen] ${size.width}x${size.height} → ${image.getSize().width}x${image.getSize().height}, ${Math.round(jpegBuffer.length / 1024)}KB`);
+      console.log(`[captureScreen] [${config?.screenResolution || '480p'}] ${size.width}x${size.height} → ${image.getSize().width}x${image.getSize().height}, ${Math.round(jpegBuffer.length / 1024)}KB`);
       return jpegBuffer.toString('base64');
     }
 
@@ -156,10 +175,65 @@ async function captureScreen() {
 
 // ─── Whisper transcription ──────────────────────────────────────────────────
 
-const { execFile } = require('child_process');
+const { execFile, spawn } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const SCRIPT_PATH = path.join(__dirname, '..', '..', 'bin', 'transcribe.py');
+
+// Known Whisper hallucination patterns (YouTube subtitle credits, filler from silence)
+const WHISPER_HALLUCINATIONS = [
+  /субтитры\s*(создав|делал|сделал|подготовил)/i,
+  /subtitles\s*(by|made|created|provided)/i,
+  /sous-titres?\s*(par|créés|réalis)/i,
+  /untertitel\s*(von|erstellt)/i,
+  /подписывайтесь/i,
+  /amara\.org/i,
+  /thanks\s*for\s*watching/i,
+  /please\s*subscribe/i,
+  /♪/,
+  /^\s*\.+\s*$/,
+  /^[\s.…,!?]*$/,
+];
+
+function isWhisperHallucination(text) {
+  if (!text || text.length < 3) return true;
+  const trimmed = text.trim();
+  return WHISPER_HALLUCINATIONS.some(re => re.test(trimmed));
+}
+
+const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY || 'f54a899579ed1e886d054877b141144562b64aa4';
+
+async function transcribeDeepgram(audioBase64) {
+  if (!DEEPGRAM_API_KEY) return null;
+  try {
+    const audioBuffer = Buffer.from(audioBase64, 'base64');
+    const response = await fetch('https://api.deepgram.com/v1/listen?model=nova-2&smart_format=true&detect_language=true', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Token ${DEEPGRAM_API_KEY}`,
+        'Content-Type': 'audio/wav'
+      },
+      body: audioBuffer
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      console.warn('[Deepgram] API error:', response.status, errText);
+      return null;
+    }
+
+    const data = await response.json();
+    const transcript = data?.results?.channels?.[0]?.alternatives?.[0]?.transcript?.trim();
+    if (transcript && !isWhisperHallucination(transcript)) {
+      console.log('[Deepgram] Transcribed via Nova-2:', transcript);
+      return transcript;
+    }
+    return null;
+  } catch (err) {
+    console.error('[Deepgram] Request failed:', err.message);
+    return null;
+  }
+}
 
 function transcribeWhisper(audioBase64, model) {
   return new Promise((resolve) => {
@@ -181,13 +255,25 @@ function transcribeWhisper(audioBase64, model) {
         return resolve(null);
       }
       const transcript = (stdout || '').trim();
-      if (transcript && !transcript.startsWith('ERROR:')) {
+      if (transcript && !transcript.startsWith('ERROR:') && !isWhisperHallucination(transcript)) {
         resolve(transcript);
       } else {
+        if (transcript && isWhisperHallucination(transcript)) {
+          console.log('[Whisper] Filtered hallucination:', transcript);
+        }
         resolve(null);
       }
     });
   });
+}
+
+async function transcribeAudio(audioBase64, model) {
+  // Transcribe via Deepgram Nova-2 Cloud API (~0.3s latency, high accuracy)
+  console.log('[STT] Transcribing via Deepgram Nova-2...');
+  let text = await transcribeDeepgram(audioBase64);
+  if (text && text.trim()) return text.trim();
+
+  return '';
 }
 
 // ─── IPC Handlers ────────────────────────────────────────────────────────────
@@ -317,22 +403,145 @@ function setupIPC() {
   // Get desktop sources (for system audio)
   ipcMain.handle('get-desktop-sources', async () => {
     try {
-      const sources = await desktopCapturer.getSources({ types: ['screen', 'window'] });
-      return sources.map(s => ({ id: s.id, name: s.name }));
+      const sources = await desktopCapturer.getSources({
+        types: ['screen'],
+        thumbnailSize: { width: 1, height: 1 }
+      });
+      return { sources: sources.map(s => ({ id: s.id, name: s.name })) };
     } catch (err) {
-      console.error('Failed to get desktop sources:', err);
-      return [];
+      console.error('Failed to get desktop sources:', err.message);
+      return { error: err.message, sources: [] };
     }
   });
 
-  // Real-time chunk transcription (async, non-blocking) — uses turbo model
+  // ── Native ScreenCaptureKit System Audio Capture ──────────────────────────
+  let sysAudioProcess = null;
+  let sysAudioFile = null;
+
+  ipcMain.handle('start-system-audio-capture', async () => {
+    if (sysAudioProcess) {
+      try { sysAudioProcess.kill('SIGINT'); } catch (e) {}
+      sysAudioProcess = null;
+    }
+
+    sysAudioFile = path.join(os.tmpdir(), `sys_audio_${Date.now()}.wav`);
+    const scriptPath = path.join(__dirname, '..', '..', 'bin', 'record_sysaudio.swift');
+
+    try {
+      console.log('[SysAudio] Spawning swift interpreter:', scriptPath, sysAudioFile);
+      sysAudioProcess = spawn('swift', [scriptPath, sysAudioFile, '180']);
+      console.log('[SysAudio] spawn() returned, pid:', sysAudioProcess.pid);
+
+      // Stream real-time VOL: dB levels from ScreenCaptureKit to renderer
+      if (sysAudioProcess.stdout) {
+        console.log('[SysAudio] stdout stream available, attaching data listener');
+        let buf = '';
+        sysAudioProcess.stdout.on('data', (chunk) => {
+          const raw = chunk.toString();
+          console.log('[SysAudio] stdout chunk:', raw.trim().substring(0, 80));
+          buf += raw;
+          const lines = buf.split('\n');
+          buf = lines.pop() || '';
+          for (const line of lines) {
+            if (line.startsWith('VOL:')) {
+              const db = parseInt(line.slice(4), 10);
+              console.log('[SysAudio] Parsed VOL db:', db, 'mainWindow exists:', !!mainWindow);
+              if (!isNaN(db) && mainWindow) {
+                mainWindow.webContents.send('sys-audio-volume', db);
+              }
+            }
+          }
+        });
+      } else {
+        console.error('[SysAudio] WARNING: stdout stream is NULL');
+      }
+
+      if (sysAudioProcess.stderr) {
+        sysAudioProcess.stderr.on('data', (chunk) => {
+          console.error('[SysAudio] stderr:', chunk.toString().trim());
+        });
+      }
+
+      sysAudioProcess.on('error', (err) => {
+        console.error('[SysAudio] Process error:', err);
+      });
+
+      sysAudioProcess.on('exit', (code, signal) => {
+        console.log('[SysAudio] Process exited, code:', code, 'signal:', signal);
+      });
+
+      console.log('[SysAudio] System audio capture process launched:', sysAudioFile);
+      return { ok: true };
+    } catch (err) {
+      console.error('[SysAudio] Failed to launch system audio capture:', err);
+      return { error: err.message };
+    }
+  });
+
+  ipcMain.handle('stop-system-audio-capture', async () => {
+    if (sysAudioProcess) {
+      try { sysAudioProcess.kill('SIGINT'); } catch (e) {}
+      sysAudioProcess = null;
+      await new Promise(r => setTimeout(r, 500));
+    }
+
+    if (sysAudioFile && fs.existsSync(sysAudioFile)) {
+      try {
+        const audioBuffer = fs.readFileSync(sysAudioFile);
+        fs.unlinkSync(sysAudioFile);
+        sysAudioFile = null;
+
+        const base64 = audioBuffer.toString('base64');
+        const transcript = await transcribeAudio(base64, 'turbo');
+        return { transcript: transcript || '' };
+      } catch (err) {
+        console.error('[ScreenCaptureKit] Read/transcribe error:', err);
+        return { error: err.message };
+      }
+    }
+
+    return { transcript: '' };
+  });
+
+  // Raw system audio WAV — stops capture, returns base64 without transcribing (for both-mode mixing)
+  ipcMain.handle('stop-system-audio-capture-raw', async () => {
+    if (sysAudioProcess) {
+      try { sysAudioProcess.kill('SIGINT'); } catch (e) {}
+      sysAudioProcess = null;
+      await new Promise(r => setTimeout(r, 500));
+    }
+
+    if (sysAudioFile && fs.existsSync(sysAudioFile)) {
+      try {
+        const audioBuffer = fs.readFileSync(sysAudioFile);
+        fs.unlinkSync(sysAudioFile);
+        sysAudioFile = null;
+        return { base64: audioBuffer.toString('base64') };
+      } catch (err) {
+        console.error('[ScreenCaptureKit] Raw read error:', err);
+        return { error: err.message };
+      }
+    }
+    return { base64: null };
+  });
+
+  // Real-time chunk transcription (async, non-blocking) — uses turbo model + Deepgram Nova-2 fallback
   ipcMain.handle('transcribe-chunk', async (event, audioBase64) => {
-    return await transcribeWhisper(audioBase64, 'turbo') || '';
+    return await transcribeAudio(audioBase64, 'turbo') || '';
   });
 
   // Gemini / Groq screenshot transcription
   ipcMain.handle('transcribe-image', async (event, imageBase64) => {
     return await transcribeImage(config, imageBase64);
+  });
+
+  // Log history IPC (for renderer errors & client logs)
+  ipcMain.handle('log-history', (event, userMsg, assistantMsg) => {
+    const activeId = config.activeProvider;
+    const hist = historyByProvider[activeId] || (historyByProvider[activeId] = []);
+    if (userMsg) hist.push({ role: 'user', content: userMsg });
+    if (assistantMsg) hist.push({ role: 'assistant', content: assistantMsg });
+    return { ok: true };
   });
 
   // Clipboard write bridge
@@ -393,19 +602,25 @@ function registerShortcuts() {
     });
   } catch (e) {}
 
-  // Cmd+Shift+Space — activate overlay out of stealth mode
+  // Cmd+Shift+Space — toggle active input mode vs stealth mode
   try {
     globalShortcut.register('CommandOrControl+Shift+Space', () => {
       if (!mainWindow) return;
-      if (!isVisible) {
-        isVisible = true;
-        mainWindow.show();
-        mainWindow.webContents.send('visibility-change', true);
+      if (isInteractive) {
+        isInteractive = false;
+        mainWindow.setIgnoreMouseEvents(true, { forward: true });
+        mainWindow.webContents.send('deactivate');
+      } else {
+        if (!isVisible) {
+          isVisible = true;
+          mainWindow.show();
+          mainWindow.webContents.send('visibility-change', true);
+        }
+        isInteractive = true;
+        mainWindow.setIgnoreMouseEvents(false);
+        mainWindow.focus();
+        mainWindow.webContents.send('activate-input');
       }
-      isInteractive = true;
-      mainWindow.setIgnoreMouseEvents(false);
-      mainWindow.focus();
-      mainWindow.webContents.send('activate-input');
     });
   } catch (e) {}
 

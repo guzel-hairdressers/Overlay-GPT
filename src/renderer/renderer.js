@@ -31,6 +31,7 @@ let providerId = 'deepseek';
 let providerKind = '';
 let audioSource = 'mic';
 let maxRecordingSeconds = 120;
+let autoChunks = true;             // auto-chunk audio on silence (all modes)
 
 // Multimodal attachments
 let pendingScreenshot = null;
@@ -48,6 +49,17 @@ let silenceCount = 0;
 let audioAnalyzer = null;
 let vadThresholdDb = 2.5;  // dB above background noise floor
 let vadSilenceMs = 1600;    // 1.6s continuous silence triggers auto-submit
+let sysAudioDb = -90;       // Real-time system audio dB from ScreenCaptureKit
+let sysAudioVolReceived = 0; // Debug counter
+
+// Listen for real-time system audio volume from ScreenCaptureKit
+window.api.onSysAudioVolume((db) => {
+  sysAudioVolReceived++;
+  if (sysAudioVolReceived <= 5 || sysAudioVolReceived % 50 === 0) {
+    console.log('[SysAudio Renderer] Received VOL IPC #' + sysAudioVolReceived + ':', db, 'dB');
+  }
+  sysAudioDb = db;
+});
 
 // Audio Chunking & Sequential Queue state
 let chunkQueue = [];
@@ -89,6 +101,7 @@ async function hydrateUI() {
       String(Math.min(cfg.stealthOpacity * 1.8, 0.4)));
     audioSource = cfg.audioSource;
     maxRecordingSeconds = cfg.maxRecordingSeconds;
+    autoChunks = cfg.autoChunks !== false;
 
     // Show placeholder if no keys at all
     const hasAnyKey = Object.values(cfg.providers).some(p => p.hasKey) ||
@@ -130,7 +143,6 @@ function deactivate() {
   statusText.textContent = disabled ? 'disabled' : muted ? 'muted' : 'stealth';
   questionInput.blur();
   questionInput.value = '';
-  hideAutocomplete();
   clearPendingAttachments();
   window.api.setInteractive(false);
 }
@@ -337,6 +349,8 @@ window.api.onConfigChange((cfg) => {
     String(Math.min(cfg.stealthOpacity * 1.8, 0.4)));
 });
 
+// ─── Keyboard Handling ──────────────────────────────────────────────────────
+
 // ─── Slash Command Autocomplete ──────────────────────────────────────────────
 
 const SLASH_COMMANDS = [
@@ -347,40 +361,100 @@ const SLASH_COMMANDS = [
   { cmd: '/key', args: '<provider> <key>', desc: 'set API key or custom endpoint' },
   { cmd: '/export', args: '[path]', desc: 'export chat transcript to Desktop file' },
   { cmd: '/copy', args: '', desc: 'copy chat transcript to clipboard' },
-  { cmd: '/audio', args: 'mic|system|off', desc: 'select audio recording source' },
-  { cmd: '/opacity', args: '<0.01-1>', desc: 'stealth mode opacity' },
-  { cmd: '/theme', args: 'light|dark', desc: 'toggle color theme' },
+  { cmd: '/audio', args: 'mic|system|both|off', desc: 'select audio recording source' },
+  { cmd: '/setting', args: '[key] [value]', desc: 'view/change settings: resolution, audio, opacity, theme, auto-chunks' },
   { cmd: '/clear', args: '[all]', desc: 'clear conversation history' },
   { cmd: '/mute', args: '', desc: 'suppress response output' },
   { cmd: '/disable', args: '', desc: 'pause all input processing' },
   { cmd: '/help', args: '', desc: 'show command reference manual' }
 ];
 
+const SETTING_KEYS = [
+  { key: 'resolution', vals: '360p|480p|720p|1080p|native', desc: 'screenshot capture resolution' },
+  { key: 'audio', vals: 'mic|system|both|off', desc: 'audio recording source' },
+  { key: 'opacity', vals: '0.01–1.0', desc: 'stealth mode opacity' },
+  { key: 'theme', vals: 'light|dark', desc: 'color theme' },
+  { key: 'auto-chunks', vals: 'true|false', desc: 'auto-chunk audio on silence (all modes)' },
+  { key: 'max-recording', vals: '<seconds>', desc: 'max recording duration before auto-stop (default 120)' },
+];
+
 const autocompletePopup = document.getElementById('autocompletePopup');
 const autocompleteList = document.getElementById('autocompleteList');
 let autocompleteMatches = [];
 let autocompleteIndex = 0;
+let autocompleteMode = 'command'; // 'command' | 'setting-key' | 'setting-value'
+let autocompleteSettingKey = null;
 
 function updateAutocomplete() {
   const val = questionInput.value;
-  if (!val.startsWith('/') || val.includes(' ')) {
+  if (!val.startsWith('/')) {
     hideAutocomplete();
     return;
   }
 
-  const query = val.toLowerCase();
-  autocompleteMatches = SLASH_COMMANDS.filter(c => c.cmd.toLowerCase().startsWith(query));
+  const spaceIdx = val.indexOf(' ');
+  const hasSpace = spaceIdx !== -1;
+  const cmdName = (hasSpace ? val.slice(0, spaceIdx) : val).toLowerCase();
+  const afterCmd = hasSpace ? val.slice(spaceIdx + 1) : '';
 
-  if (autocompleteMatches.length === 0) {
-    hideAutocomplete();
+  // ── Stage 1: completing command name (no space) ──
+  if (!hasSpace) {
+    autocompleteMode = 'command';
+    const query = val.toLowerCase();
+    autocompleteMatches = SLASH_COMMANDS.filter(c => c.cmd.toLowerCase().startsWith(query));
+    if (autocompleteMatches.length === 0) { hideAutocomplete(); return; }
+    if (autocompleteIndex >= autocompleteMatches.length) autocompleteIndex = 0;
+    renderAutocomplete();
+    showAutocomplete();
     return;
   }
 
-  if (autocompleteIndex >= autocompleteMatches.length) {
-    autocompleteIndex = 0;
+  // ── Stage 2 & 3: nested /setting autocomplete ──
+  if (cmdName === '/setting') {
+    const argParts = afterCmd.split(/\s+/);
+    const typedKey = argParts[0] || '';
+    const typedVal = argParts.slice(1).join(' ');
+    const endsWithSpace = afterCmd.endsWith(' ');
+
+    // Stage 2: completing setting key name (e.g., "/setting au")
+    if (!endsWithSpace && argParts.length === 1) {
+      autocompleteMode = 'setting-key';
+      autocompleteSettingKey = null;
+      const query = typedKey.toLowerCase();
+      autocompleteMatches = SETTING_KEYS
+        .filter(s => s.key.startsWith(query))
+        .map(s => ({ cmd: s.key, args: s.vals, desc: s.desc }));
+    }
+    // Stage 3: completing setting value (e.g., "/setting auto-chunks ")
+    else if (endsWithSpace || argParts.length >= 2) {
+      const key = typedKey.toLowerCase();
+      const setting = SETTING_KEYS.find(s => s.key === key);
+      if (setting && setting.vals && !setting.vals.startsWith('0.01')) {
+        autocompleteMode = 'setting-value';
+        autocompleteSettingKey = key;
+        const query = typedVal.toLowerCase();
+        const values = setting.vals.split('|');
+        autocompleteMatches = values
+          .filter(v => v.startsWith(query))
+          .map(v => ({ cmd: v, args: '', desc: '' }));
+      } else {
+        hideAutocomplete();
+        return;
+      }
+    } else {
+      hideAutocomplete();
+      return;
+    }
+
+    if (autocompleteMatches.length === 0) { hideAutocomplete(); return; }
+    if (autocompleteIndex >= autocompleteMatches.length) autocompleteIndex = 0;
+    renderAutocomplete();
+    showAutocomplete();
+    return;
   }
-  renderAutocomplete();
-  showAutocomplete();
+
+  // Commands other than /setting with args — hide popup
+  hideAutocomplete();
 }
 
 function renderAutocomplete() {
@@ -389,9 +463,10 @@ function renderAutocomplete() {
   autocompleteMatches.forEach((item, index) => {
     const el = document.createElement('div');
     el.className = `autocomplete-item${index === autocompleteIndex ? ' selected' : ''}`;
+    const prefix = autocompleteMode === 'command' ? '' : '  ';
     el.innerHTML = `
       <div class="cmd-left">
-        <span class="cmd-name">${item.cmd}</span>
+        <span class="cmd-name">${prefix}${item.cmd}</span>
         ${item.args ? `<span class="cmd-args">${item.args}</span>` : ''}
       </div>
       <span class="cmd-desc">${item.desc}</span>
@@ -416,9 +491,26 @@ function ensureAutocompleteVisible() {
 function applyAutocomplete(item) {
   const selected = item || autocompleteMatches[autocompleteIndex];
   if (!selected) return;
-  questionInput.value = selected.cmd + ' ';
+
+  if (autocompleteMode === 'command') {
+    // Complete command name: "/sett" + Tab → "/setting "
+    questionInput.value = selected.cmd + ' ';
+  } else if (autocompleteMode === 'setting-key') {
+    // Complete setting key: "/setting au" + Tab → "/setting auto-chunks "
+    questionInput.value = '/setting ' + selected.cmd + ' ';
+    autocompleteMode = 'setting-value';
+    autocompleteSettingKey = selected.cmd;
+  } else if (autocompleteMode === 'setting-value') {
+    // Complete setting value: "/setting auto-chunks tr" + Tab → "/setting auto-chunks true"
+    const prefix = '/setting ' + autocompleteSettingKey;
+    questionInput.value = prefix + ' ' + selected.cmd;
+  }
+
   hideAutocomplete();
   questionInput.focus();
+
+  // Trigger fresh autocomplete for the next stage
+  setTimeout(() => updateAutocomplete(), 0);
 }
 
 function showAutocomplete() {
@@ -429,6 +521,8 @@ function hideAutocomplete() {
   if (autocompletePopup) autocompletePopup.classList.remove('visible');
   autocompleteMatches = [];
   autocompleteIndex = 0;
+  autocompleteMode = 'command';
+  autocompleteSettingKey = null;
 }
 
 // ─── Keyboard Handling ──────────────────────────────────────────────────────
@@ -498,6 +592,16 @@ questionInput.addEventListener('keydown', async (e) => {
   }
 });
 
+// Capture phase key listener: Enter during audio recording ALWAYS triggers prompt submission
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey && isRecording) {
+    e.preventDefault();
+    e.stopPropagation();
+    stopRecording(false);
+    return;
+  }
+}, true);
+
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && isActive) {
     e.preventDefault();
@@ -509,57 +613,70 @@ document.addEventListener('keydown', (e) => {
 // ─── Audio Recording ────────────────────────────────────────────────────────
 
 async function getAudioStream(sourceType) {
-  const getMicStream = async () => {
-    return await navigator.mediaDevices.getUserMedia({ audio: true });
-  };
+  const getMicStream = () => navigator.mediaDevices.getUserMedia({ audio: true });
 
   const getSystemStream = async () => {
-    const desktopStream = await navigator.mediaDevices.getUserMedia({
-      audio: { mandatory: { chromeMediaSource: 'desktop' } },
-      video: {
-        mandatory: {
-          chromeMediaSource: 'desktop',
-          minWidth: 1, maxWidth: 1,
-          minHeight: 1, maxHeight: 1
-        }
+    try {
+      const res = await window.api.getDesktopSources();
+      const sources = (res && res.sources) || (Array.isArray(res) ? res : []);
+      if (res && res.error) {
+        throw new Error('macOS blocked screen capture: ' + res.error);
       }
-    });
-    desktopStream.getVideoTracks().forEach(t => t.stop());
-    return new MediaStream(desktopStream.getAudioTracks());
+      console.log('[getAudioStream] Desktop sources:', sources.map(s => s.name));
+      const source = sources.find(s => s.id.startsWith('screen:')) || sources[0];
+      if (!source) {
+        throw new Error('Screen Recording permission is disabled for Overlay GPT / Electron in macOS System Settings.');
+      }
+
+      console.log('[getSystemStream] Acquiring system audio for source:', source.id, source.name);
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          mandatory: {
+            chromeMediaSource: 'desktop',
+            chromeMediaSourceId: source.id
+          }
+        },
+        video: {
+          mandatory: {
+            chromeMediaSource: 'desktop',
+            chromeMediaSourceId: source.id
+          }
+        }
+      });
+
+      // Keep ScreenCaptureKit video sink active in background via video-only MediaStream so macOS loopback stays connected without muting audio
+      const dummyVideo = document.createElement('video');
+      dummyVideo.style.display = 'none';
+      dummyVideo.muted = true;
+      dummyVideo.srcObject = new MediaStream(stream.getVideoTracks());
+      document.body.appendChild(dummyVideo);
+      dummyVideo.play().catch(() => {});
+
+      const audioTracks = stream.getAudioTracks();
+      if (audioTracks.length === 0) {
+        throw new Error('No audio tracks captured. Ensure System Audio & Screen Recording permission is allowed.');
+      }
+      console.log('[getAudioStream] System audio stream acquired cleanly with active video sink, audio tracks:', audioTracks.length);
+
+      const audioOnlyStream = new MediaStream(audioTracks);
+      audioOnlyStream._sourceTracks = stream.getTracks();
+      audioOnlyStream._dummyVideo = dummyVideo;
+      return audioOnlyStream;
+    } catch (e) {
+      console.error('[getAudioStream] System audio capture FAILED:', e.message);
+      throw new Error('System audio capture failed: ' + e.message + '. Ensure Screen Recording permission is allowed in System Settings > Privacy & Security.');
+    }
   };
 
   if (sourceType === 'system') {
-    try {
-      return await getSystemStream();
-    } catch (err) {
-      console.warn('System audio capture failed, falling back to mic:', err);
-      return await getMicStream();
-    }
+    return await getSystemStream();
   }
 
   if (sourceType === 'both' || sourceType === 'mic+system') {
-    try {
-      const [micStream, systemStream] = await Promise.all([
-        getMicStream(),
-        getSystemStream()
-      ]);
-
-      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      const micSource = audioCtx.createMediaStreamSource(micStream);
-      const systemSource = audioCtx.createMediaStreamSource(systemStream);
-      const destination = audioCtx.createMediaStreamDestination();
-
-      micSource.connect(destination);
-      systemSource.connect(destination);
-
-      const combinedStream = destination.stream;
-      combinedStream._sourceTracks = [...micStream.getTracks(), ...systemStream.getTracks()];
-      combinedStream._audioCtx = audioCtx;
-      return combinedStream;
-    } catch (err) {
-      console.warn('Dual audio capture failed, falling back to mic:', err);
-      return await getMicStream();
-    }
+    // System audio is captured via native ScreenCaptureKit (Swift), not Chromium
+    // which returns silent audio on macOS. Only return mic stream here.
+    console.log('[getAudioStream] both mode: returning mic-only stream (system audio via ScreenCaptureKit)');
+    return await getMicStream();
   }
 
   return await getMicStream();
@@ -571,7 +688,22 @@ async function startRecording() {
     return;
   }
 
+  // ── System-only mode: delegate to native ScreenCaptureKit path ──
+  if (audioSource === 'system') {
+    return startSystemAudioRecording();
+  }
+
   try {
+
+    // Start native ScreenCaptureKit system audio capture for dual mode
+    if (audioSource === 'both' || audioSource === 'mic+system') {
+      try {
+        const result = await window.api.startSystemAudioCapture();
+        if (result && result.error) console.warn('[SysAudio] Start warning:', result.error);
+        else console.log('[startRecording] Native ScreenCaptureKit system audio started for both mode');
+      } catch (e) { console.warn('[SysAudio] Failed to start system audio:', e); }
+    }
+
     const stream = await getAudioStream(audioSource);
 
     audioChunks = [];
@@ -656,6 +788,13 @@ async function startRecording() {
     window.api.onFlushChunk(flushChunkHandler);
 
     mediaRecorder.onstop = async () => {
+      if (stream._dummyVideo) {
+        try {
+          stream._dummyVideo.pause();
+          stream._dummyVideo.srcObject = null;
+          stream._dummyVideo.remove();
+        } catch (e) {}
+      }
       if (stream._sourceTracks) {
         stream._sourceTracks.forEach(t => t.stop());
       }
@@ -665,12 +804,68 @@ async function startRecording() {
       }
 
       let finalQuestion = questionInput.value.trim();
+      const isDualMode = audioSource === 'both' || audioSource === 'mic+system';
 
-      if (!finalQuestion) {
-        // Enqueue remaining audio recorded since last Cmd+Space flush
+      if (isDualMode) {
+        // ── Both mode: mix mic + system audio waveforms, transcribe together ──
+        statusText.textContent = 'mixing audio...';
+        try {
+          // Flush any remaining buffered data before building the blob
+          if (mediaRecorder && mediaRecorder.state === 'recording') {
+            try { mediaRecorder.requestData(); } catch (e) {}
+            await new Promise(r => setTimeout(r, 50));
+          }
+
+          // 1. Convert all mic WebM chunks → PCM Float32 (16kHz mono)
+          console.log('[both] audioChunks count:', audioChunks.length,
+                      'sizes:', audioChunks.map(c => c.size).join(', '));
+          const micBlob = new Blob(audioChunks, { type: 'audio/webm' });
+          console.log('[both] micBlob size:', micBlob.size, 'bytes');
+          const { mono: micPcm } = await decodeWebmToMonoPcm(micBlob);
+          console.log('[both] micPCM decoded:', micPcm.length, 'samples (', (micPcm.length/16000).toFixed(1), 's)');
+
+          // 2. Get system audio WAV raw from Swift (no transcription)
+          const sysResult = await window.api.stopSystemAudioCaptureRaw();
+          const sysBase64 = (sysResult && sysResult.base64) || null;
+
+          // 3. Mix: align lengths, sum with simple averaging (transparent, no artifacts)
+          let mixed = micPcm;
+          if (sysBase64) {
+            const sysPcm = wavBase64ToPcm(sysBase64);
+            const maxLen = Math.max(micPcm.length, sysPcm.length);
+            mixed = new Float32Array(maxLen);
+            for (let i = 0; i < maxLen; i++) {
+              const micSample = i < micPcm.length ? micPcm[i] : 0;
+              const sysSample = i < sysPcm.length ? sysPcm[i] : 0;
+              mixed[i] = (micSample + sysSample) / 2;
+            }
+            console.log('[both] Mixed mic', micPcm.length, 'samples + sys', sysPcm.length, 'samples →', maxLen);
+          }
+
+          // 4. Encode mixed PCM → WAV → base64
+          const mixedWav = pcmToWavBlob(mixed, 16000);
+          const arrayBuffer = await mixedWav.arrayBuffer();
+          const mixedBase64 = btoa(
+            new Uint8Array(arrayBuffer).reduce((data, byte) => data + String.fromCharCode(byte), '')
+          );
+
+          // 5. Transcribe the mixed audio
+          statusText.textContent = 'transcribing mixed audio...';
+          const transcript = await window.api.transcribeChunk(mixedBase64);
+
+          if (transcript) {
+            finalQuestion = finalQuestion
+              ? finalQuestion + '\n\n[Audio]: ' + transcript
+              : transcript;
+            console.log('[both] Mixed transcript:', transcript.slice(0, 100));
+          }
+        } catch (e) {
+          console.error('[both] Audio mixing failed:', e);
+        }
+      } else if (!finalQuestion) {
+        // ── Mic-only: existing chunk transcription pipeline ──
         await enqueueCurrentChunk();
 
-        // Wait until all background chunk transcriptions are completed
         if (isProcessingChunkQueue || chunkQueue.length > 0) {
           statusText.textContent = 'finishing transcription of all chunks...';
           while (isProcessingChunkQueue || chunkQueue.length > 0) {
@@ -689,8 +884,8 @@ async function startRecording() {
       audioChunks = [];
 
       if (!finalQuestion) {
-        statusText.textContent = 'no speech detected...';
-        deactivate();
+        showError('No speech detected in audio recording.');
+        if (statusText) statusText.textContent = 'no speech detected';
         return;
       }
 
@@ -707,27 +902,33 @@ async function startRecording() {
       audioAnalyzer = new AudioNoiseAnalyzer(stream, {
         onsetThresholdDb: 8.0,
         offsetThresholdDb: 3.5,
-        silenceMs: vadSilenceMs,
+        silenceMs: 1000,
         onSpeechStart: () => {
           if (isRecording) {
             statusText.textContent = 'speaking...';
           }
         },
         onSilence: () => {
-          if (isRecording) {
-            statusText.textContent = 'silence detected... responding';
-            stopRecording(false);
+          if (isRecording && autoChunks) {
+            statusText.textContent = 'chunking audio...';
+            enqueueCurrentChunk();
           }
         },
         onVolumeChange: (data) => {
           if (vadMeterBadge && isRecording) {
             vadMeterBadge.classList.add('visible');
+
+            if (audioSource === 'both' || audioSource === 'mic+system') {
+              vadDbText.textContent = `MIC ${data.currentDb}dB / SYS ${sysAudioDb}dB`;
+            } else {
+              vadDbText.textContent = `${data.currentDb}dB (flr:${data.noiseFloorDb})`;
+            }
+
             const normVol = Math.max(0, Math.min(100, ((data.currentDb + 90) / 90) * 100));
             const normFloor = Math.max(0, Math.min(100, (((data.noiseFloorDb + data.onsetThresholdDb) + 90) / 90) * 100));
 
             vadMeterFill.style.width = normVol + '%';
             vadNoiseFloorMarker.style.left = normFloor + '%';
-            vadDbText.textContent = `${data.currentDb}dB (flr:${data.noiseFloorDb})`;
 
             if (data.isCalibrating) {
               vadMeterBadge.classList.remove('speaking', 'silence');
@@ -777,8 +978,11 @@ async function startRecording() {
   }
 }
 
-function stopRecording(discard) {
-  if (!mediaRecorder || !isRecording) return;
+async function stopRecording(discard) {
+  if (!isRecording) return;
+
+  const wasSystemMode = audioSource === 'system';
+  const wasBothMode = audioSource === 'both' || audioSource === 'mic+system';
 
   isRecording = false;
   clearInterval(recordingTimerInterval);
@@ -793,12 +997,30 @@ function stopRecording(discard) {
     audioAnalyzer = null;
   }
 
+  // Immediately stop mediaRecorder stream tracks so mic hardware turns off instantly
+  if (mediaRecorder && mediaRecorder.stream) {
+    try { mediaRecorder.stream.getTracks().forEach(t => t.stop()); } catch (e) {}
+  }
+
+  // Clean up system-only VAD interval
+  if (window._sysVadInterval) {
+    clearInterval(window._sysVadInterval);
+    window._sysVadInterval = null;
+  }
+
   if (discard) {
-    mediaRecorder.ondataavailable = null;
-    mediaRecorder.onstop = () => {
-      mediaRecorder.stream?.getTracks().forEach(t => t.stop());
-    };
-    mediaRecorder.stop();
+    // Stop system audio capture (discard) for system/both modes
+    if (wasSystemMode || wasBothMode) {
+      try { await window.api.stopSystemAudioCapture(); } catch (e) {}
+    }
+
+    if (mediaRecorder) {
+      mediaRecorder.ondataavailable = null;
+      mediaRecorder.onstop = () => {
+        mediaRecorder.stream?.getTracks().forEach(t => t.stop());
+      };
+      mediaRecorder.stop();
+    }
     audioBadge.classList.remove('visible');
     statusDot.classList.remove('recording');
     statusText.textContent = isActive ? 'active' : disabled ? 'disabled' : muted ? 'muted' : 'stealth';
@@ -811,15 +1033,183 @@ function stopRecording(discard) {
     return;
   }
 
+  // ── System-only mode: stop Swift capture, get transcript, submit ──
+  if (wasSystemMode) {
+    audioBadge.classList.remove('visible');
+    statusDot.classList.remove('recording');
+    statusText.textContent = 'transcribing system audio...';
+
+    try {
+      const result = await window.api.stopSystemAudioCapture();
+      const transcript = (result && result.transcript) || '';
+
+      if (!transcript) {
+        showError('No speech detected in system audio.');
+        if (statusText) statusText.textContent = 'no speech detected';
+        return;
+      }
+
+      await submitQuestion(transcript);
+    } catch (err) {
+      console.error('[SysAudio] Stop/transcribe error:', err);
+      showError('System audio transcription failed: ' + err.message);
+    }
+    return;
+  }
+
+  // ── Mic / Both modes: stop MediaRecorder ──
+  // (mediaRecorder.onstop handles both-mode system audio mixing & transcription)
   audioBadge.classList.remove('visible');
   statusDot.classList.remove('recording');
   statusText.textContent = 'transcribing...';
   if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+    // Flush any buffered audio before stopping so all chunks are in audioChunks
+    try { mediaRecorder.requestData(); } catch (e) {}
+    await new Promise(r => setTimeout(r, 100));
     try { mediaRecorder.stop(); } catch (e) {}
   }
 }
 
 
+
+// ─── System-Only Audio Recording (native ScreenCaptureKit via Swift) ──────────
+
+async function startSystemAudioRecording() {
+  try {
+    audioChunks = [];
+    chunkQueue = [];
+    chunkTranscripts = [];
+    currentChunkIndex = 0;
+    lastSampleOffset = 0;
+    isProcessingChunkQueue = false;
+
+    // Start native ScreenCaptureKit system audio capture
+    const result = await window.api.startSystemAudioCapture();
+    if (result && result.error) {
+      throw new Error('System audio capture failed: ' + result.error);
+    }
+    console.log('[startSystemAudioRecording] Native ScreenCaptureKit system audio started');
+
+    // ── System VAD meter with running noise-floor calibration ──
+    const sysDbHistory = [];
+    const calibrationDurationMs = 2000;
+    const calibrationStart = Date.now();
+    let sysNoiseFloor = -60;
+    let sysCalibrated = false;
+    let sysSilenceStart = null;       // timestamp when silence began
+    const sysSilenceMs = 2000;        // 2s sustained silence shown in VAD
+
+    window._sysVadInterval = setInterval(() => {
+      if (!isRecording || !vadMeterBadge) return;
+      vadMeterBadge.classList.add('visible');
+      vadDbText.textContent = `SYS ${sysAudioDb}dB`;
+
+      const elapsed = Date.now() - calibrationStart;
+
+      if (!sysCalibrated && elapsed < calibrationDurationMs) {
+        // Calibration: collect dB samples to estimate noise floor
+        sysDbHistory.push(sysAudioDb);
+        const normVol = Math.max(0, Math.min(100, ((sysAudioDb + 90) / 90) * 100));
+        vadMeterFill.style.width = normVol + '%';
+        vadNoiseFloorMarker.style.left = '8%';
+        vadMeterBadge.classList.remove('speaking', 'silence');
+        const remaining = Math.ceil((calibrationDurationMs - elapsed) / 1000);
+        vadStateTag.textContent = `CALIB ${remaining}s`;
+        statusText.textContent = `calibrating system audio... ${remaining}s`;
+      } else {
+        if (!sysCalibrated) {
+          // Finish calibration: noise floor = average of quietest 30%
+          sysDbHistory.sort((a, b) => a - b);
+          const quietCount = Math.max(1, Math.floor(sysDbHistory.length * 0.3));
+          sysNoiseFloor = sysDbHistory.slice(0, quietCount).reduce((a, b) => a + b, 0) / quietCount;
+          sysCalibrated = true;
+          console.log('[sysVAD] Calibrated noise floor:', sysNoiseFloor.toFixed(1), 'dB');
+        }
+
+        const normVol = Math.max(0, Math.min(100, ((sysAudioDb + 90) / 90) * 100));
+        const normFloor = Math.max(2, Math.min(95, ((sysNoiseFloor + 90) / 90) * 100));
+        vadMeterFill.style.width = normVol + '%';
+        vadNoiseFloorMarker.style.left = normFloor + '%';
+
+        const threshold = sysNoiseFloor + 8; // 8dB above noise floor
+        if (sysAudioDb > threshold) {
+          vadMeterBadge.classList.add('speaking');
+          vadMeterBadge.classList.remove('silence');
+          vadStateTag.textContent = 'SPEECH';
+          sysSilenceStart = null;
+        } else {
+          vadMeterBadge.classList.remove('speaking');
+          // Track silence duration for visual VAD (never auto-stop)
+          if (autoChunks) {
+            if (!sysSilenceStart) sysSilenceStart = Date.now();
+            const silenceElapsed = Date.now() - sysSilenceStart;
+            if (silenceElapsed >= sysSilenceMs) {
+              vadMeterBadge.classList.add('silence');
+              vadStateTag.textContent = 'SILENT';
+            } else {
+              const remaining = Math.max(0, (sysSilenceMs - silenceElapsed) / 1000).toFixed(1);
+              vadStateTag.textContent = `WAIT ${remaining}s`;
+            }
+          } else {
+            vadMeterBadge.classList.remove('silence');
+            vadStateTag.textContent = 'QUIET';
+          }
+        }
+      }
+    }, 100);
+
+    isRecording = true;
+    lastTranscript = '';
+    silenceCount = 0;
+
+    activate();
+    audioBadge.classList.add('visible');
+    vadMeterBadge.classList.add('visible');
+    statusDot.classList.add('recording');
+    statusText.textContent = 'system audio listening...';
+    questionInput.placeholder = 'capturing system audio... press enter to stop';
+
+    recordingStartTime = Date.now();
+    recTimer.textContent = '0:00';
+    recordingTimerInterval = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - recordingStartTime) / 1000);
+      const mins = Math.floor(elapsed / 60);
+      const secs = elapsed % 60;
+      recTimer.textContent = `${mins}:${secs.toString().padStart(2, '0')}`;
+      if (elapsed >= maxRecordingSeconds) {
+        stopRecording(false);
+      }
+    }, 1000);
+
+  } catch (err) {
+    console.error('Failed to start system audio recording:', err);
+    showError(`System audio recording failed: ${err.message}. Ensure Screen Recording permission is allowed in System Settings > Privacy & Security.`);
+  }
+}
+
+// ─── WAV base64 → PCM Float32 decoder ──────────────────────────────────────
+
+function wavBase64ToPcm(base64) {
+  const bytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+  const view = new DataView(bytes.buffer);
+  // Walk RIFF chunks to find 'data'
+  let offset = 12; // skip RIFF header
+  while (offset < bytes.length - 8) {
+    const chunkId = String.fromCharCode(...bytes.slice(offset, offset + 4));
+    const chunkSize = view.getUint32(offset + 4, true);
+    if (chunkId === 'data') {
+      const dataStart = offset + 8;
+      const numSamples = chunkSize / 2; // Int16 = 2 bytes
+      const pcm = new Float32Array(numSamples);
+      for (let i = 0; i < numSamples; i++) {
+        pcm[i] = view.getInt16(dataStart + i * 2, true) / 32768.0;
+      }
+      return pcm;
+    }
+    offset += 8 + chunkSize;
+  }
+  return new Float32Array(0);
+}
 
 // ─── WebM → WAV transcode & PCM slicing ───────────────────────────────────
 
@@ -1042,6 +1432,10 @@ function showError(message) {
   errorEl.className = 'answer-error';
   errorEl.textContent = message;
   answerContent.appendChild(errorEl);
+
+  if (window.api && window.api.logHistory) {
+    window.api.logHistory('[System Event]', message).catch(() => {});
+  }
 }
 
 // ─── Scroll-to-bottom button ────────────────────────────────────────────────

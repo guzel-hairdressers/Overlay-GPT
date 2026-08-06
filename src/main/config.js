@@ -14,10 +14,10 @@ const DEFAULT_CONFIG = {
   },
   customProviders: {
     gemma: {
-      name: 'Local Gemma 4 E4B',
+      name: 'Local Gemma 4 E2B',
       endpoint: 'http://localhost:9379/v1',
       apiKey: 'local',
-      model: 'gemma-4-e4b-it'
+      model: 'gemma-4-e2b-it'
     }
   },
   activeProvider: 'groq',
@@ -25,9 +25,11 @@ const DEFAULT_CONFIG = {
   disabled: false,
   stealthOpacity: 0.15,
   activeOpacity: 0.85,
-  audioSource: 'mic',            // 'mic' | 'system' | 'off'
+  audioSource: 'mic',            // 'mic' | 'system' | 'both' | 'off'
+  autoChunks: true,              // auto-stop system recording on sustained silence
   maxRecordingSeconds: 120,
-  theme: 'dark'                 // 'dark' | 'light'
+  theme: 'dark',                // 'dark' | 'light'
+  screenResolution: '480p'      // '360p' | '480p' | '720p' | '1080p' | 'native'
 };
 
 // ─── Deep merge ────────────────────────────────────────────────────────────────
